@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback } from "react";
-import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil } from "lucide-react";
+import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2 } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 
 const COLORS = {
@@ -48,7 +48,9 @@ function parseOptionSymbol(raw) {
 // FIFO-match buy/sell legs per symbol. Handles both long trades (buy→sell)
 // and short trades like sold puts (sell→buy). Each direction uses its own lot queue.
 function computeRealized(trades) {
-  const sorted = [...trades].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+  const sorted = trades
+    .map((t, idx) => ({ ...t, _idx: idx }))
+    .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
   const longLots = {};
   const shortLots = {};
   const realized = [];
@@ -75,9 +77,9 @@ function computeRealized(trades) {
           remaining -= matched;
           if (lot.qty <= 1e-9) shortLots[t.symbol].shift();
         }
-        if (remaining > 1e-9) longLots[t.symbol].push({ qty: remaining, price: t.price, date: t.date, account: t.account });
+        if (remaining > 1e-9) longLots[t.symbol].push({ qty: remaining, price: t.price, date: t.date, account: t.account, idx: t._idx });
       } else {
-        longLots[t.symbol].push({ qty: t.qty, price: t.price, date: t.date, account: t.account });
+        longLots[t.symbol].push({ qty: t.qty, price: t.price, date: t.date, account: t.account, idx: t._idx });
       }
     } else {
       if (longLots[t.symbol].length > 0) {
@@ -98,10 +100,10 @@ function computeRealized(trades) {
           remaining -= matched;
           if (lot.qty <= 1e-9) longLots[t.symbol].shift();
         }
-        if (remaining > 1e-9) shortLots[t.symbol].push({ qty: remaining, price: t.price, date: t.date, account: t.account });
+        if (remaining > 1e-9) shortLots[t.symbol].push({ qty: remaining, price: t.price, date: t.date, account: t.account, idx: t._idx });
       } else {
         // Sell-to-open a short position (e.g. selling a put)
-        shortLots[t.symbol].push({ qty: t.qty, price: t.price, date: t.date, account: t.account });
+        shortLots[t.symbol].push({ qty: t.qty, price: t.price, date: t.date, account: t.account, idx: t._idx });
       }
     }
   }
@@ -116,6 +118,7 @@ function computeRealized(trades) {
       account: remaining[0]?.account || '',
       openDate: remaining.reduce((min, l) => (!min || l.date < min ? l.date : min), null),
       isShort: false,
+      lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty })),
     });
   }
   for (const [symbol, arr] of Object.entries(shortLots)) {
@@ -128,6 +131,7 @@ function computeRealized(trades) {
       account: remaining[0]?.account || '',
       openDate: remaining.reduce((min, l) => (!min || l.date < min ? l.date : min), null),
       isShort: true,
+      lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty })),
     });
   }
 
@@ -369,6 +373,28 @@ export default function TradeTracker() {
     try { localStorage.removeItem('trades-data'); } catch (_) {}
     setTrades([]); setLastSynced(null); setSelectedDay(null);
     setError(null); setImportNote(null); setNotes(''); setTradeNotes({}); setEditingNoteKey(null);
+  }, []);
+
+  // Removes just the unmatched (open) quantity of a position's underlying legs,
+  // leaving any already-realized portion of those same trades intact.
+  const deletePosition = useCallback((position) => {
+    if (!window.confirm('Delete this open position? This removes the unmatched quantity from your trade history.')) return;
+    setTrades((prev) => {
+      const updated = prev
+        .map((t, i) => {
+          const lot = position.lots.find((l) => l.idx === i);
+          if (!lot) return t;
+          const newQty = t.qty - lot.qty;
+          return newQty > 1e-9 ? { ...t, qty: newQty } : null;
+        })
+        .filter(Boolean);
+      try {
+        const raw = localStorage.getItem('trades-data');
+        const parsed = raw ? JSON.parse(raw) : {};
+        localStorage.setItem('trades-data', JSON.stringify({ ...parsed, trades: updated }));
+      } catch (_) {}
+      return updated;
+    });
   }, []);
 
   // ── Schwab import (TSV from Excel paste) ─────────────────────────────────────
@@ -907,8 +933,14 @@ export default function TradeTracker() {
                           {p.isShort && <span style={{ fontSize: 11, fontWeight: 500, color: COLORS.amber, marginLeft: 6 }}>SHORT</span>}
                           {p.account ? <span style={{ fontWeight: 400, color: COLORS.dim }}> ({p.account})</span> : null}
                         </div>
-                        <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700 }}>
-                          ${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                          <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700 }}>
+                            ${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                          </div>
+                          <button onClick={() => deletePosition(p)} title="Delete this position"
+                            style={{ flexShrink: 0, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.red, cursor: 'pointer', padding: '5px 7px', display: 'flex', alignItems: 'center' }}>
+                            <Trash2 size={13} />
+                          </button>
                         </div>
                       </div>
                       <div style={{ fontSize: 11, color: COLORS.dim, fontFamily: MONO, marginTop: 2 }}>
