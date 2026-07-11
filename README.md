@@ -32,10 +32,3 @@ Format:
 
 Your data is saved to the browser's `localStorage`, so it persists between
 sessions on the same browser/machine. Click "clear data" in the app to wipe it.
-
-## Build for production
-
-```bash
-npm run build
-npm run preview
-```
