@@ -1,4 +1,4 @@
-import { useState, useEffect, useMemo, useCallback } from "react";
+import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from "react";
 import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2 } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 
@@ -283,12 +283,14 @@ export default function TradeTracker() {
   const [importNote, setImportNote] = useState(null);
   const [showPositions, setShowPositions] = useState(false);
   const [showTickerPnl, setShowTickerPnl] = useState(false);
-  const [showNotes, setShowNotes] = useState(false);
+  const [showBackup, setShowBackup] = useState(false);
   const [editingNoteKey, setEditingNoteKey] = useState(null);
   const [selectedDay, setSelectedDay] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [year, setYear] = useState(new Date().getFullYear());
   const [month, setMonth] = useState(new Date().getMonth());
+  const calendarRef = useRef(null);
+  const [calHeight, setCalHeight] = useState(null);
 
   useEffect(() => {
     (async () => {
@@ -467,7 +469,6 @@ export default function TradeTracker() {
     [activeAccount, rhRealized, schwabRealized]
   );
 
-  const activeNotes      = activeAccount === 'robinhood' ? notes : schwabNotes;
   const activeTradeNotes = activeAccount === 'robinhood' ? tradeNotes : schwabTradeNotes;
 
   const dayPnl = useMemo(() => {
@@ -576,29 +577,21 @@ export default function TradeTracker() {
     }
   };
 
-  const saveActiveNotes = (val) => {
-    if (activeAccount === 'robinhood') {
-      setNotes(val);
-      try {
-        const raw = localStorage.getItem('trades-data');
-        const parsed = raw ? JSON.parse(raw) : {};
-        localStorage.setItem('trades-data', JSON.stringify({ ...parsed, notes: val }));
-      } catch (_) {}
-    } else {
-      setSchwabNotes(val);
-      try {
-        const raw = localStorage.getItem('trades-data-schwab');
-        const parsed = raw ? JSON.parse(raw) : {};
-        localStorage.setItem('trades-data-schwab', JSON.stringify({ ...parsed, notes: val }));
-      } catch (_) {}
-    }
-  };
-
   const firstDow = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const maxAbs = Math.max(1, ...Object.values(dayPnl).map((d) => Math.abs(d.pnl)));
   const selectedTrades = selectedDay ? (dayPnl[selectedDay]?.trades || []) : realized.slice().reverse().slice(0, 20);
   const hasData = activeAccount === 'robinhood' ? trades.length > 0 : schwabRealized.length > 0;
+
+  useLayoutEffect(() => {
+    const el = calendarRef.current;
+    if (!el) return;
+    const update = () => setCalHeight(el.offsetHeight);
+    update();
+    const ro = new ResizeObserver(update);
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [year, month, dayPnl]);
 
   return (
     <div style={{ background: COLORS.bg, color: COLORS.text, fontFamily: SANS, minHeight: 600, padding: 24, borderRadius: 12 }}>
@@ -621,9 +614,9 @@ export default function TradeTracker() {
             ))}
           </div>
 
-          <button onClick={() => setShowNotes(true)}
+          <button onClick={() => setShowBackup(true)}
             style={{ background: 'none', color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-            Notes
+            Backup
           </button>
           {hasData && (
             <button onClick={() => setShowTickerPnl(true)}
@@ -723,9 +716,9 @@ export default function TradeTracker() {
         </div>
       ) : (
         <>
-          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(140px, 1fr))', gap: 12, marginBottom: 20 }}>
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
             <StatCard label="Realized P&L" value={fmt(stats.total)} color={stats.total >= 0 ? COLORS.green : COLORS.red} />
-            <StatCard label="Win Rate" value={`${stats.winRate}%`} color={COLORS.text} />
+            <StatCard label="Win Rate" value={`${stats.winRate}%`} color={COLORS.text} square />
             <StatCard label="Best Day" value={stats.best ? fmt(stats.best.pnl) : '—'} sub={stats.best?.date} color={COLORS.green} />
             <StatCard label="Worst Day" value={stats.worst ? fmt(stats.worst.pnl) : '—'} sub={stats.worst?.date} color={COLORS.red} />
             {activeAccount === 'robinhood' && (
@@ -776,7 +769,7 @@ export default function TradeTracker() {
 
           <div className="tt-grid">
             {/* Calendar */}
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18 }}>
+            <div ref={calendarRef} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, alignSelf: 'start' }}>
               <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
                 <button onClick={() => shiftMonth(-1)} style={navBtnStyle}><ChevronLeft size={14} /></button>
                 <div style={{ fontSize: 13, fontWeight: 600, minWidth: 110 }}>{MONTHS[month]} {year}</div>
@@ -839,7 +832,7 @@ export default function TradeTracker() {
             </div>
 
             {/* Trade list */}
-            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, maxHeight: 360, overflowY: 'auto' }}>
+            <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, boxSizing: 'border-box', alignSelf: 'start', height: calHeight ?? undefined, maxHeight: calHeight ?? 360, overflowY: 'auto' }}>
               <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 12 }}>
                 {selectedDay ? `Trades · ${selectedDay}` : 'Recent realized trades'}
               </div>
@@ -992,22 +985,10 @@ export default function TradeTracker() {
         <TickerPnlModal tickerByMonth={tickerByMonth} onClose={() => setShowTickerPnl(false)} />
       )}
 
-      {showNotes && (
-        <div onClick={() => setShowNotes(false)}
-          style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100 }}>
-          <div onClick={(e) => e.stopPropagation()}
-            style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20, width: '100%', maxWidth: 540, fontFamily: SANS, color: COLORS.text }}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
-              <div style={{ fontSize: 15, fontWeight: 700 }}>Notes · {activeAccount === 'robinhood' ? 'Robinhood' : 'Schwab'}</div>
-              <button onClick={() => setShowNotes(false)}
-                style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}>×</button>
-            </div>
-            <textarea value={activeNotes} onChange={(e) => saveActiveNotes(e.target.value)}
-              placeholder="Jot down trade ideas, journal entries, reminders…"
-              style={{ width: '100%', height: 300, background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 12, fontSize: 13, fontFamily: SANS, resize: 'vertical', boxSizing: 'border-box', lineHeight: 1.6, outline: 'none' }} />
-          </div>
-        </div>
+      {showBackup && (
+        <BackupModal onClose={() => setShowBackup(false)} />
       )}
+
     </div>
   );
 }
@@ -1031,13 +1012,16 @@ function TickerPnlModal({ tickerByMonth, onClose }) {
 
   const total = tickers.reduce((s, [, d]) => s + d.pnl, 0);
   const isAll = selMonth === ALL;
+  const maxAbs = Math.max(1, ...tickers.map(([, d]) => Math.abs(d.pnl)));
+  const winners = tickers.filter(([, d]) => d.pnl >= 0).length;
+  const losers = tickers.length - winners;
 
   return (
     <div onClick={onClose}
       style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100 }}>
       <div onClick={(e) => e.stopPropagation()}
         style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20, width: '100%', maxWidth: 480, maxHeight: '80vh', overflowY: 'auto', fontFamily: SANS, color: COLORS.text }}>
-        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 14 }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 12 }}>
             <div style={{ fontSize: 15, fontWeight: 700 }}>P&L by Ticker</div>
             <select value={selMonth} onChange={(e) => setSelMonth(e.target.value)}
@@ -1056,16 +1040,31 @@ function TickerPnlModal({ tickerByMonth, onClose }) {
           <div style={{ fontSize: 13, color: COLORS.dim }}>No trades{isAll ? '.' : ' this month.'}</div>
         ) : (
           <>
-            {tickers.map(([ticker, d]) => (
-              <div key={ticker} style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', padding: '8px 0', borderBottom: `1px solid ${COLORS.border}` }}>
-                <div style={{ fontSize: 13, fontWeight: 600, fontFamily: MONO }}>{ticker}</div>
-                <div style={{ display: 'flex', gap: 14, alignItems: 'center' }}>
-                  <div style={{ fontSize: 11, color: COLORS.dim, fontFamily: MONO }}>{d.count} trade{d.count === 1 ? '' : 's'}</div>
-                  <div style={{ fontSize: 13, fontWeight: 700, fontFamily: MONO, color: d.pnl >= 0 ? COLORS.green : COLORS.red, minWidth: 82, textAlign: 'right' }}>{fmt(d.pnl)}</div>
-                </div>
-              </div>
-            ))}
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 10, marginTop: 2 }}>
+            <div style={{ display: 'flex', gap: 16, fontSize: 11.5, color: COLORS.muted, paddingBottom: 12, marginBottom: 12, borderBottom: `1px solid ${COLORS.border}` }}>
+              <span>{tickers.length} ticker{tickers.length === 1 ? '' : 's'}</span>
+              <span style={{ color: COLORS.green }}>{winners} winner{winners === 1 ? '' : 's'}</span>
+              <span style={{ color: COLORS.red }}>{losers} loser{losers === 1 ? '' : 's'}</span>
+            </div>
+            <div style={{ display: 'flex', flexDirection: 'column', gap: 13 }}>
+              {tickers.map(([ticker, d]) => {
+                const pct = Math.max(2, Math.round((Math.abs(d.pnl) / maxAbs) * 100));
+                const barColor = d.pnl >= 0 ? COLORS.green : COLORS.red;
+                return (
+                  <div key={ticker}>
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'baseline', marginBottom: 4 }}>
+                      <div style={{ fontSize: 13, fontWeight: 700, fontFamily: MONO }}>
+                        {ticker} <span style={{ fontWeight: 400, fontSize: 10.5, color: COLORS.dim }}>· {d.count} trade{d.count === 1 ? '' : 's'}</span>
+                      </div>
+                      <div style={{ fontSize: 13, fontWeight: 700, fontFamily: MONO, color: barColor }}>{fmt(d.pnl)}</div>
+                    </div>
+                    <div style={{ height: 6, borderRadius: 3, background: COLORS.bg, overflow: 'hidden' }}>
+                      <div style={{ width: `${pct}%`, height: '100%', borderRadius: 3, background: barColor }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', paddingTop: 14, marginTop: 14, borderTop: `1px solid ${COLORS.border}` }}>
               <div style={{ fontSize: 12, fontWeight: 700, color: COLORS.muted }}>{isAll ? 'Overall total' : 'Month total'}</div>
               <div style={{ fontFamily: MONO, fontSize: 14, fontWeight: 700, color: total >= 0 ? COLORS.green : COLORS.red }}>{fmt(total)}</div>
             </div>
@@ -1076,20 +1075,125 @@ function TickerPnlModal({ tickerByMonth, onClose }) {
   );
 }
 
+function BackupModal({ onClose }) {
+  const [importText, setImportText] = useState('');
+  const [copied, setCopied] = useState(false);
+  const [error, setError] = useState(null);
+
+  const exportJson = useMemo(() => {
+    const data = {};
+    try { const raw = localStorage.getItem('trades-data'); if (raw) data['trades-data'] = JSON.parse(raw); } catch (_) {}
+    try { const raw = localStorage.getItem('trades-data-schwab'); if (raw) data['trades-data-schwab'] = JSON.parse(raw); } catch (_) {}
+    return JSON.stringify(data, null, 2);
+  }, []);
+
+  const copyToClipboard = async () => {
+    try {
+      await navigator.clipboard.writeText(exportJson);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch (_) {
+      setError('Could not copy automatically — select the text above and copy it manually (Ctrl+A, Ctrl+C).');
+    }
+  };
+
+  const loadBackup = () => {
+    setError(null);
+    let parsed;
+    try {
+      parsed = JSON.parse(importText);
+    } catch (_) {
+      setError('That doesn’t look like valid JSON.');
+      return;
+    }
+    if (!parsed['trades-data'] && !parsed['trades-data-schwab']) {
+      setError('No recognizable trade data found in that JSON.');
+      return;
+    }
+    if (!window.confirm('Load this backup? This will overwrite the trade data currently stored here.')) return;
+    try {
+      if (parsed['trades-data']) localStorage.setItem('trades-data', JSON.stringify(parsed['trades-data']));
+      if (parsed['trades-data-schwab']) localStorage.setItem('trades-data-schwab', JSON.stringify(parsed['trades-data-schwab']));
+      window.location.reload();
+    } catch (_) {
+      setError('Could not save that backup to this browser.');
+    }
+  };
+
+  return (
+    <div onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100 }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20, width: '100%', maxWidth: 560, maxHeight: '85vh', overflowY: 'auto', fontFamily: SANS, color: COLORS.text }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>Backup &amp; Restore</div>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}>×</button>
+        </div>
+
+        <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 8 }}>Export</div>
+        <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10, lineHeight: 1.5 }}>
+          Copy this and paste it into the app running elsewhere (another localhost, a Netlify deploy, etc.) to bring your trades and notes with you.
+        </div>
+        <textarea readOnly value={exportJson} onClick={(e) => e.target.select()}
+          style={{ width: '100%', height: 130, background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: 10, fontSize: 11.5, fontFamily: MONO, resize: 'vertical', boxSizing: 'border-box', marginBottom: 10 }} />
+        <button onClick={copyToClipboard}
+          style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+          {copied ? 'Copied!' : 'Copy to clipboard'}
+        </button>
+
+        <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', margin: '20px 0 8px' }}>Import</div>
+        <div style={{ fontSize: 12, color: COLORS.muted, marginBottom: 10, lineHeight: 1.5 }}>
+          Paste a backup copied from another instance, then load it. This overwrites the data stored in this browser.
+        </div>
+        <textarea value={importText} onChange={(e) => setImportText(e.target.value)}
+          placeholder="Paste backup JSON here…"
+          style={{ width: '100%', height: 130, background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: 10, fontSize: 11.5, fontFamily: MONO, resize: 'vertical', boxSizing: 'border-box', marginBottom: 10 }} />
+        {error && (
+          <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(240,80,110,0.1)', border: `1px solid ${COLORS.red}`, color: COLORS.red, borderRadius: 8, padding: '10px 14px', marginBottom: 10, fontSize: 13 }}>
+            <AlertCircle size={15} /> {error}
+          </div>
+        )}
+        <button onClick={loadBackup} disabled={!importText.trim()}
+          style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: importText.trim() ? 'pointer' : 'default', opacity: importText.trim() ? 1 : 0.5 }}>
+          Load backup
+        </button>
+      </div>
+    </div>
+  );
+}
+
 function DaySwingCard({ monthlyBreakdown }) {
+  const years = useMemo(() => [...new Set(monthlyBreakdown.map(([key]) => key.slice(0, 4)))], [monthlyBreakdown]);
+  const yearTotals = useMemo(() => {
+    const map = {};
+    for (const [key, d] of monthlyBreakdown) {
+      const y = key.slice(0, 4);
+      if (!map[y]) map[y] = { day: 0, swing: 0, dayCount: 0, swingCount: 0 };
+      map[y].day += d.day; map[y].swing += d.swing;
+      map[y].dayCount += d.dayCount; map[y].swingCount += d.swingCount;
+    }
+    return map;
+  }, [monthlyBreakdown]);
+
   const [selectedMonth, setSelectedMonth] = useState(monthlyBreakdown[monthlyBreakdown.length - 1][0]);
-  const entry = monthlyBreakdown.find(([m]) => m === selectedMonth);
-  const d = entry ? entry[1] : null;
+  const isYear = selectedMonth.startsWith('Y:');
+  const d = isYear ? yearTotals[selectedMonth.slice(2)] : (monthlyBreakdown.find(([m]) => m === selectedMonth)?.[1] ?? null);
   return (
     <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '12px 16px', marginBottom: 20 }}>
       <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
         <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>Day vs Swing</div>
         <select value={selectedMonth} onChange={(e) => setSelectedMonth(e.target.value)}
           style={{ background: COLORS.panel2, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 5, padding: '3px 8px', fontSize: 12, fontFamily: SANS, cursor: 'pointer', outline: 'none' }}>
-          {monthlyBreakdown.map(([key]) => {
-            const [ky, km] = key.split('-');
-            return <option key={key} value={key}>{MONTHS[parseInt(km, 10) - 1]} {ky}</option>;
-          })}
+          {years.map((y) => (
+            <optgroup key={y} label={y}>
+              <option value={`Y:${y}`}>{y} Total</option>
+              {monthlyBreakdown.filter(([key]) => key.startsWith(y)).map(([key]) => {
+                const [ky, km] = key.split('-');
+                return <option key={key} value={key}>{MONTHS[parseInt(km, 10) - 1]} {ky}</option>;
+              })}
+            </optgroup>
+          ))}
         </select>
       </div>
       {d && (
@@ -1115,15 +1219,19 @@ function DaySwingCard({ monthlyBreakdown }) {
   );
 }
 
-function StatCard({ label, value, sub, color, onClick }) {
+function StatCard({ label, value, sub, color, onClick, square }) {
   return (
     <div onClick={onClick}
-      style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '14px 16px', cursor: onClick ? 'pointer' : 'default', transition: 'border-color .15s' }}
+      style={{
+        background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '10px 12px',
+        cursor: onClick ? 'pointer' : 'default', transition: 'border-color .15s', boxSizing: 'border-box',
+        ...(square ? { width: 82, height: 82, flexShrink: 0, flexGrow: 0 } : { flex: '1 1 100px' }),
+      }}
       onMouseEnter={(e) => { if (onClick) e.currentTarget.style.borderColor = COLORS.amber; }}
       onMouseLeave={(e) => { if (onClick) e.currentTarget.style.borderColor = COLORS.border; }}>
-      <div style={{ fontSize: 10.5, color: COLORS.dim, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 6 }}>{label}</div>
-      <div style={{ fontSize: 19, fontWeight: 700, fontFamily: MONO, color }}>{value}</div>
-      {sub && <div style={{ fontSize: 10.5, color: COLORS.dim, marginTop: 2, fontFamily: MONO }}>{sub}</div>}
+      <div style={{ fontSize: 9.5, color: COLORS.dim, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5 }}>{label}</div>
+      <div style={{ fontSize: 16.5, fontWeight: 700, fontFamily: MONO, color }}>{value}</div>
+      {sub && <div style={{ fontSize: 9.5, color: COLORS.dim, marginTop: 2, fontFamily: MONO }}>{sub}</div>}
     </div>
   );
 }
