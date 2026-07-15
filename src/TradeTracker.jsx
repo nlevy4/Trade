@@ -56,14 +56,15 @@ function computeRealized(trades) {
   const realized = [];
   for (const t of sorted) {
     const mult = parseOptionSymbol(t.symbol) ? 100 : 1;
-    if (!longLots[t.symbol]) longLots[t.symbol] = [];
-    if (!shortLots[t.symbol]) shortLots[t.symbol] = [];
+    const key = `${t.account}|${t.symbol}`;
+    if (!longLots[key]) longLots[key] = [];
+    if (!shortLots[key]) shortLots[key] = [];
     if (t.side === 'buy') {
-      if (shortLots[t.symbol].length > 0) {
+      if (shortLots[key].length > 0) {
         // Buy-to-close a short position (e.g. buying back a sold put)
         let remaining = t.qty;
-        while (remaining > 1e-9 && shortLots[t.symbol].length) {
-          const lot = shortLots[t.symbol][0];
+        while (remaining > 1e-9 && shortLots[key].length) {
+          const lot = shortLots[key][0];
           const matched = Math.min(remaining, lot.qty);
           realized.push({
             symbol: t.symbol, desc: t.desc, qty: matched,
@@ -75,18 +76,18 @@ function computeRealized(trades) {
           });
           lot.qty -= matched;
           remaining -= matched;
-          if (lot.qty <= 1e-9) shortLots[t.symbol].shift();
+          if (lot.qty <= 1e-9) shortLots[key].shift();
         }
-        if (remaining > 1e-9) longLots[t.symbol].push({ qty: remaining, price: t.price, date: t.date, account: t.account, idx: t._idx });
+        if (remaining > 1e-9) longLots[key].push({ qty: remaining, price: t.price, date: t.date, account: t.account, idx: t._idx });
       } else {
-        longLots[t.symbol].push({ qty: t.qty, price: t.price, date: t.date, account: t.account, idx: t._idx });
+        longLots[key].push({ qty: t.qty, price: t.price, date: t.date, account: t.account, idx: t._idx });
       }
     } else {
-      if (longLots[t.symbol].length > 0) {
+      if (longLots[key].length > 0) {
         // Sell-to-close a long position
         let remaining = t.qty;
-        while (remaining > 1e-9 && longLots[t.symbol].length) {
-          const lot = longLots[t.symbol][0];
+        while (remaining > 1e-9 && longLots[key].length) {
+          const lot = longLots[key][0];
           const matched = Math.min(remaining, lot.qty);
           realized.push({
             symbol: t.symbol, desc: t.desc, qty: matched,
@@ -98,19 +99,20 @@ function computeRealized(trades) {
           });
           lot.qty -= matched;
           remaining -= matched;
-          if (lot.qty <= 1e-9) longLots[t.symbol].shift();
+          if (lot.qty <= 1e-9) longLots[key].shift();
         }
-        if (remaining > 1e-9) shortLots[t.symbol].push({ qty: remaining, price: t.price, date: t.date, account: t.account, idx: t._idx });
+        if (remaining > 1e-9) shortLots[key].push({ qty: remaining, price: t.price, date: t.date, account: t.account, idx: t._idx });
       } else {
         // Sell-to-open a short position (e.g. selling a put)
-        shortLots[t.symbol].push({ qty: t.qty, price: t.price, date: t.date, account: t.account, idx: t._idx });
+        shortLots[key].push({ qty: t.qty, price: t.price, date: t.date, account: t.account, idx: t._idx });
       }
     }
   }
   const openPositions = [];
-  for (const [symbol, arr] of Object.entries(longLots)) {
+  for (const [key, arr] of Object.entries(longLots)) {
     const remaining = arr.filter((l) => l.qty > 1e-9);
     if (!remaining.length) continue;
+    const symbol = key.slice(key.indexOf('|') + 1);
     const totalQty = remaining.reduce((s, l) => s + l.qty, 0);
     const totalCost = remaining.reduce((s, l) => s + l.qty * l.price, 0);
     openPositions.push({
@@ -121,9 +123,10 @@ function computeRealized(trades) {
       lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty })),
     });
   }
-  for (const [symbol, arr] of Object.entries(shortLots)) {
+  for (const [key, arr] of Object.entries(shortLots)) {
     const remaining = arr.filter((l) => l.qty > 1e-9);
     if (!remaining.length) continue;
+    const symbol = key.slice(key.indexOf('|') + 1);
     const totalQty = remaining.reduce((s, l) => s + l.qty, 0);
     const totalCost = remaining.reduce((s, l) => s + l.qty * l.price, 0);
     openPositions.push({
