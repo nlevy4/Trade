@@ -287,6 +287,7 @@ export default function TradeTracker() {
   const [showPositions, setShowPositions] = useState(false);
   const [showTickerPnl, setShowTickerPnl] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
+  const [compactCalendar, setCompactCalendar] = useState(false);
   const [editingNoteKey, setEditingNoteKey] = useState(null);
   const [selectedDay, setSelectedDay] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -583,6 +584,9 @@ export default function TradeTracker() {
   const firstDow = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const maxAbs = Math.max(1, ...Object.values(dayPnl).map((d) => Math.abs(d.pnl)));
+  const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+  const monthEntry = monthlyBreakdown.find(([key]) => key === monthKey);
+  const monthPnl = monthEntry ? monthEntry[1].day + monthEntry[1].swing : null;
   const selectedTrades = selectedDay ? (dayPnl[selectedDay]?.trades || []) : realized.slice().reverse().slice(0, 20);
   const hasData = activeAccount === 'robinhood' ? trades.length > 0 : schwabRealized.length > 0;
 
@@ -773,10 +777,24 @@ export default function TradeTracker() {
           <div className="tt-grid">
             {/* Calendar */}
             <div ref={calendarRef} style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, alignSelf: 'start' }}>
-              <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-                <button onClick={() => shiftMonth(-1)} style={navBtnStyle}><ChevronLeft size={14} /></button>
-                <div style={{ fontSize: 13, fontWeight: 600, minWidth: 110 }}>{MONTHS[month]} {year}</div>
-                <button onClick={() => shiftMonth(1)} style={navBtnStyle}><ChevronRight size={14} /></button>
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 14 }}>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                  <button onClick={() => shiftMonth(-1)} style={navBtnStyle}><ChevronLeft size={14} /></button>
+                  <div style={{ fontSize: 13, fontWeight: 600, minWidth: 92, textAlign: 'center' }}>{MONTHS[month]} {year}</div>
+                  <button onClick={() => shiftMonth(1)} style={navBtnStyle}><ChevronRight size={14} /></button>
+                </div>
+                <div style={{ display: 'flex', alignItems: 'center', gap: 10 }}>
+                  <button onClick={() => setCompactCalendar((c) => !c)}
+                    title={compactCalendar ? 'Show trade details' : 'Show colors only'}
+                    style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '4px 7px', display: 'flex', alignItems: 'center', cursor: 'pointer' }}>
+                    <span style={{ width: 10, height: 10, borderRadius: 2, background: compactCalendar ? COLORS.text : COLORS.dim, display: 'inline-block' }} />
+                  </button>
+                  {monthPnl != null && (
+                    <div style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: monthPnl >= 0 ? COLORS.green : COLORS.red }}>
+                      {fmt(monthPnl)}
+                    </div>
+                  )}
+                </div>
               </div>
               {(() => {
                 const weeks = [];
@@ -786,6 +804,7 @@ export default function TradeTracker() {
                   if (week.length === 7) { weeks.push(week); week = []; }
                 }
                 if (week.length) { while (week.length < 7) week.push(null); weeks.push(week); }
+                const cellMinHeight = compactCalendar ? 32 : 72;
                 return (
                   <div style={{ display: 'grid', gridTemplateColumns: 'repeat(8, 1fr)', gap: 3 }}>
                     {[...DOWS, 'Wk'].map((h, i) => (
@@ -807,13 +826,13 @@ export default function TradeTracker() {
                           return (
                             <div key={ds} onClick={() => d && setSelectedDay(isSel ? null : ds)}
                               style={{
-                                minHeight: 72, borderRadius: 5, padding: '5px 6px', cursor: d ? 'pointer' : 'default',
+                                minHeight: cellMinHeight, borderRadius: 5, padding: '5px 6px', cursor: d ? 'pointer' : 'default',
                                 background: base ? `${base}${(0.12 + intensity * 0.55).toFixed(2)})` : 'transparent',
                                 border: isSel ? `1.5px solid ${COLORS.amber}` : `1px solid ${COLORS.border}`,
                                 display: 'flex', flexDirection: 'column', gap: 1,
                               }}>
                               <span style={{ fontSize: 10, color: COLORS.dim }}>{day}</span>
-                              {d && <>
+                              {d && !compactCalendar && <>
                                 <span style={{ fontSize: 11, fontFamily: MONO, fontWeight: 700, color: d.pnl >= 0 ? COLORS.green : COLORS.red, marginTop: 3 }}>{fmt(d.pnl)}</span>
                                 <span style={{ fontSize: 9.5, color: COLORS.dim, fontFamily: MONO }}>{d.trades.length} trade{d.trades.length === 1 ? '' : 's'}</span>
                                 <span style={{ fontSize: 9.5, color: COLORS.dim, fontFamily: MONO }}>{winRate}%</span>
@@ -822,11 +841,13 @@ export default function TradeTracker() {
                           );
                         }),
                         wkData.length > 0
-                          ? <div key={`ws${wi}`} style={{ minHeight: 72, borderRadius: 5, padding: '5px 6px', background: wkPnl >= 0 ? `${COLORS.greenBg}0.08)` : `${COLORS.redBg}0.08)`, border: `1px solid ${COLORS.border}`, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 3 }}>
-                              <span style={{ fontSize: 10, fontFamily: MONO, fontWeight: 700, color: wkPnl >= 0 ? COLORS.green : COLORS.red, textAlign: 'center' }}>{fmt(wkPnl)}</span>
-                              <span style={{ fontSize: 9, color: COLORS.dim, fontFamily: MONO }}>{wkData.length}d</span>
+                          ? <div key={`ws${wi}`} style={{ minHeight: cellMinHeight, borderRadius: 5, padding: '5px 6px', background: wkPnl >= 0 ? `${COLORS.greenBg}0.08)` : `${COLORS.redBg}0.08)`, border: `1px solid ${COLORS.border}`, display: 'flex', flexDirection: 'column', justifyContent: 'center', alignItems: 'center', gap: 3 }}>
+                              {!compactCalendar && <>
+                                <span style={{ fontSize: 10, fontFamily: MONO, fontWeight: 700, color: wkPnl >= 0 ? COLORS.green : COLORS.red, textAlign: 'center' }}>{fmt(wkPnl)}</span>
+                                <span style={{ fontSize: 9, color: COLORS.dim, fontFamily: MONO }}>{wkData.length}d</span>
+                              </>}
                             </div>
-                          : <div key={`ws${wi}`} style={{ minHeight: 72, borderRadius: 5, border: `1px solid ${COLORS.border}` }} />,
+                          : <div key={`ws${wi}`} style={{ minHeight: cellMinHeight, borderRadius: 5, border: `1px solid ${COLORS.border}` }} />,
                       ];
                     })}
                   </div>
