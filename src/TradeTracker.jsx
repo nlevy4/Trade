@@ -814,7 +814,8 @@ export default function TradeTracker() {
                       const dateStr = (day) => `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                       const wkData = wk.filter(Boolean).map((day) => dayPnl[dateStr(day)]).filter(Boolean);
                       const wkPnl = wkData.reduce((s, d) => s + d.pnl, 0);
-                      const wkWinRate = wkData.length ? Math.round(wkData.filter((d) => d.pnl > 0).length / wkData.length * 100) : 0;
+                      const wkTrades = wkData.flatMap((d) => d.trades);
+                      const wkWinRate = wkTrades.length ? Math.round(wkTrades.filter((t) => t.pnl > 0).length / wkTrades.length * 100) : 0;
                       return [
                         ...wk.map((day, di) => {
                           if (!day) return <div key={`e${wi}-${di}`} />;
