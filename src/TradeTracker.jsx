@@ -814,6 +814,7 @@ export default function TradeTracker() {
                       const dateStr = (day) => `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
                       const wkData = wk.filter(Boolean).map((day) => dayPnl[dateStr(day)]).filter(Boolean);
                       const wkPnl = wkData.reduce((s, d) => s + d.pnl, 0);
+                      const wkWinRate = wkData.length ? Math.round(wkData.filter((d) => d.pnl > 0).length / wkData.length * 100) : 0;
                       return [
                         ...wk.map((day, di) => {
                           if (!day) return <div key={`e${wi}-${di}`} />;
@@ -845,6 +846,7 @@ export default function TradeTracker() {
                               {!compactCalendar && <>
                                 <span style={{ fontSize: 10, fontFamily: MONO, fontWeight: 700, color: wkPnl >= 0 ? COLORS.green : COLORS.red, textAlign: 'center' }}>{fmt(wkPnl)}</span>
                                 <span style={{ fontSize: 9, color: COLORS.dim, fontFamily: MONO }}>{wkData.length}d</span>
+                                <span style={{ fontSize: 9, color: COLORS.dim, fontFamily: MONO }}>{wkWinRate}%</span>
                               </>}
                             </div>
                           : <div key={`ws${wi}`} style={{ minHeight: cellMinHeight, borderRadius: 5, border: `1px solid ${COLORS.border}` }} />,
