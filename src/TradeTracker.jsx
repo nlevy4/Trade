@@ -144,11 +144,13 @@ function computeRealized(trades) {
   // Group legs closed at the same price on the same day (e.g. one sell filled
   // against several buy lots at different prices, or several same-priced sell
   // fills logged as separate records) into a single row with a qty-weighted
-  // avg entry price, instead of one row per matched lot/fill.
+  // avg entry price, instead of one row per matched lot/fill. Shares only —
+  // options (esp. 0DTE, which often have several distinct same-day trades at
+  // the same fill price) are kept as separate rows.
   const groups = new Map();
-  for (const r of realized) {
+  realized.forEach((r, i) => {
     const closePrice = r.isShort ? r.buyPrice : r.sellPrice;
-    const key = `${r.symbol}|${r.account}|${r.closeDate}|${closePrice}|${r.isShort}`;
+    const key = r.isOption ? `opt-${i}` : `${r.symbol}|${r.account}|${r.closeDate}|${closePrice}|${r.isShort}`;
     let g = groups.get(key);
     if (!g) {
       g = { ...r, buyNotional: r.buyPrice * r.qty, sellNotional: r.sellPrice * r.qty, legs: [...r.legs] };
@@ -161,7 +163,7 @@ function computeRealized(trades) {
       g.legs.push(...r.legs);
       if (r.openDate < g.openDate) g.openDate = r.openDate;
     }
-  }
+  });
   const coalesced = [...groups.values()].map((g) => {
     const { buyNotional, sellNotional, ...rest } = g;
     return { ...rest, buyPrice: buyNotional / g.qty, sellPrice: sellNotional / g.qty };
