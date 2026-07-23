@@ -1,6 +1,7 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from "react";
 import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2 } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
+import { APP_VERSION } from "./version";
 
 const COLORS = {
   bg: "#0A0C10",
@@ -619,7 +620,10 @@ export default function TradeTracker() {
           <div style={{ fontSize: 11, letterSpacing: 1.5, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 4 }}>
             {activeAccount === 'robinhood' ? 'Robinhood · via SnapTrade' : 'Charles Schwab'}
           </div>
-          <h1 style={{ fontSize: 26, fontWeight: 700, margin: 0, letterSpacing: -0.5 }}>Trade Tracker</h1>
+          <h1 style={{ fontSize: 26, fontWeight: 700, margin: 0, letterSpacing: -0.5, display: 'flex', alignItems: 'baseline', gap: 8 }}>
+            Trade Tracker
+            <span style={{ fontSize: 11, fontWeight: 600, color: COLORS.dim, fontFamily: MONO }}>v{APP_VERSION}</span>
+          </h1>
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: 10, flexWrap: 'wrap' }}>
           {/* Account toggle */}
