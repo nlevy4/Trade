@@ -74,6 +74,7 @@ function computeRealized(trades) {
             pnl: (lot.price - t.price) * matched * mult,
             isOption: mult === 100, isShort: true,
             account: lot.account || t.account,
+            legs: [{ idx: t._idx, qty: matched }, { idx: lot.idx, qty: matched }],
           });
           lot.qty -= matched;
           remaining -= matched;
@@ -97,6 +98,7 @@ function computeRealized(trades) {
             pnl: (t.price - lot.price) * matched * mult,
             isOption: mult === 100, isShort: false,
             account: lot.account || t.account,
+            legs: [{ idx: t._idx, qty: matched }, { idx: lot.idx, qty: matched }],
           });
           lot.qty -= matched;
           remaining -= matched;
@@ -149,13 +151,14 @@ function computeRealized(trades) {
     const key = `${r.symbol}|${r.account}|${r.closeDate}|${closePrice}|${r.isShort}`;
     let g = groups.get(key);
     if (!g) {
-      g = { ...r, buyNotional: r.buyPrice * r.qty, sellNotional: r.sellPrice * r.qty };
+      g = { ...r, buyNotional: r.buyPrice * r.qty, sellNotional: r.sellPrice * r.qty, legs: [...r.legs] };
       groups.set(key, g);
     } else {
       g.qty += r.qty;
       g.pnl += r.pnl;
       g.buyNotional += r.buyPrice * r.qty;
       g.sellNotional += r.sellPrice * r.qty;
+      g.legs.push(...r.legs);
       if (r.openDate < g.openDate) g.openDate = r.openDate;
     }
   }
@@ -414,6 +417,49 @@ export default function TradeTracker() {
       return updated;
     });
   }, []);
+
+  // Deletes every realized trade that closed on a given day. For Robinhood this
+  // walks each trade's contributing legs and trims/removes the underlying buy
+  // and sell rows; for Schwab it just drops the matching imported rows.
+  const deleteDay = useCallback((dateStr, dayTrades) => {
+    if (!dayTrades || !dayTrades.length) return;
+    if (!window.confirm(`Delete all trades closed on ${dateStr}? This cannot be undone.`)) return;
+    if (activeAccount === 'robinhood') {
+      const removeQty = {};
+      for (const r of dayTrades) {
+        for (const leg of r.legs || []) {
+          removeQty[leg.idx] = (removeQty[leg.idx] || 0) + leg.qty;
+        }
+      }
+      setTrades((prev) => {
+        const updated = prev
+          .map((t, i) => {
+            const rem = removeQty[i];
+            if (!rem) return t;
+            const newQty = t.qty - rem;
+            return newQty > 1e-9 ? { ...t, qty: newQty } : null;
+          })
+          .filter(Boolean);
+        try {
+          const raw = localStorage.getItem('trades-data');
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem('trades-data', JSON.stringify({ ...parsed, trades: updated }));
+        } catch (_) {}
+        return updated;
+      });
+    } else {
+      setSchwabRealized((prev) => {
+        const updated = prev.filter((t) => t.closeDate !== dateStr);
+        try {
+          const raw = localStorage.getItem('trades-data-schwab');
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem('trades-data-schwab', JSON.stringify({ ...parsed, realized: updated }));
+        } catch (_) {}
+        return updated;
+      });
+    }
+    setSelectedDay((sd) => (sd === dateStr ? null : sd));
+  }, [activeAccount]);
 
   // ── Schwab import (TSV from Excel paste) ─────────────────────────────────────
   const importSchwabTrades = useCallback((rawText) => {
@@ -848,7 +894,16 @@ export default function TradeTracker() {
                                 border: isSel ? `1.5px solid ${COLORS.amber}` : `1px solid ${COLORS.border}`,
                                 display: 'flex', flexDirection: 'column', gap: 1,
                               }}>
-                              <span style={{ fontSize: 10, color: COLORS.dim }}>{day}</span>
+                              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between' }}>
+                                <span style={{ fontSize: 10, color: COLORS.dim }}>{day}</span>
+                                {d && (
+                                  <button onClick={(e) => { e.stopPropagation(); deleteDay(ds, d.trades); }}
+                                    title="Delete this day's trades"
+                                    style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', padding: 0, display: 'flex', alignItems: 'center', opacity: 0.55 }}>
+                                    <Trash2 size={9} />
+                                  </button>
+                                )}
+                              </div>
                               {d && !compactCalendar && <>
                                 <span style={{ fontSize: 11, fontFamily: MONO, fontWeight: 700, color: d.pnl >= 0 ? COLORS.green : COLORS.red, marginTop: 3 }}>{fmt(d.pnl)}</span>
                                 <span style={{ fontSize: 9.5, color: COLORS.dim, fontFamily: MONO }}>{d.trades.length} trade{d.trades.length === 1 ? '' : 's'}</span>
