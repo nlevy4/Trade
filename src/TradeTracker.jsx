@@ -461,6 +461,44 @@ export default function TradeTracker() {
     setSelectedDay((sd) => (sd === dateStr ? null : sd));
   }, [activeAccount]);
 
+  // Deletes a single realized trade row. For Robinhood this trims/removes just
+  // that trade's contributing buy/sell legs; for Schwab it drops that one row.
+  const deleteTrade = useCallback((t) => {
+    if (!window.confirm('Delete this trade? This cannot be undone.')) return;
+    if (activeAccount === 'robinhood') {
+      const removeQty = {};
+      for (const leg of t.legs || []) {
+        removeQty[leg.idx] = (removeQty[leg.idx] || 0) + leg.qty;
+      }
+      setTrades((prev) => {
+        const updated = prev
+          .map((tr, i) => {
+            const rem = removeQty[i];
+            if (!rem) return tr;
+            const newQty = tr.qty - rem;
+            return newQty > 1e-9 ? { ...tr, qty: newQty } : null;
+          })
+          .filter(Boolean);
+        try {
+          const raw = localStorage.getItem('trades-data');
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem('trades-data', JSON.stringify({ ...parsed, trades: updated }));
+        } catch (_) {}
+        return updated;
+      });
+    } else {
+      setSchwabRealized((prev) => {
+        const updated = prev.filter((r) => r !== t);
+        try {
+          const raw = localStorage.getItem('trades-data-schwab');
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem('trades-data-schwab', JSON.stringify({ ...parsed, realized: updated }));
+        } catch (_) {}
+        return updated;
+      });
+    }
+  }, [activeAccount]);
+
   // ── Schwab import (TSV from Excel paste) ─────────────────────────────────────
   const importSchwabTrades = useCallback((rawText) => {
     setError(null);
@@ -960,6 +998,10 @@ export default function TradeTracker() {
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, position: 'relative', color: hasNote ? COLORS.amber : COLORS.dim, display: 'flex', alignItems: 'center' }}>
                               <Pencil size={12} />
                               {hasNote && !isEditing && <span style={{ position: 'absolute', top: 2, right: 2, width: 4, height: 4, borderRadius: '50%', background: COLORS.amber }} />}
+                            </button>
+                            <button onClick={() => deleteTrade(t)} title="Delete this trade"
+                              style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: COLORS.dim, display: 'flex', alignItems: 'center' }}>
+                              <Trash2 size={12} />
                             </button>
                             <div style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: t.pnl >= 0 ? COLORS.green : COLORS.red, display: 'flex', alignItems: 'center', gap: 4 }}>
                               {t.pnl >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
