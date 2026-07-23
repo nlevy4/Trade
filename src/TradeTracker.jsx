@@ -73,6 +73,7 @@ function computeRealized(trades) {
             pnl: (lot.price - t.price) * matched * mult,
             isOption: mult === 100, isShort: true,
             account: lot.account || t.account,
+            closeIdx: t._idx,
           });
           lot.qty -= matched;
           remaining -= matched;
@@ -96,6 +97,7 @@ function computeRealized(trades) {
             pnl: (t.price - lot.price) * matched * mult,
             isOption: mult === 100, isShort: false,
             account: lot.account || t.account,
+            closeIdx: t._idx,
           });
           lot.qty -= matched;
           remaining -= matched;
@@ -138,19 +140,27 @@ function computeRealized(trades) {
     });
   }
 
-  const coalesced = [];
-  const indexOf = new Map();
+  // Group all legs closed by the same order (e.g. one sell filled against several
+  // buy lots at different prices) into a single row with a qty-weighted avg price,
+  // instead of one row per matched lot.
+  const groups = new Map();
   for (const r of realized) {
-    const key = `${r.symbol}|${r.openDate}|${r.closeDate}|${r.buyPrice}|${r.sellPrice}|${r.account}`;
-    if (indexOf.has(key)) {
-      const existing = coalesced[indexOf.get(key)];
-      existing.qty += r.qty;
-      existing.pnl += r.pnl;
+    let g = groups.get(r.closeIdx);
+    if (!g) {
+      g = { ...r, buyNotional: r.buyPrice * r.qty, sellNotional: r.sellPrice * r.qty };
+      groups.set(r.closeIdx, g);
     } else {
-      indexOf.set(key, coalesced.length);
-      coalesced.push({ ...r });
+      g.qty += r.qty;
+      g.pnl += r.pnl;
+      g.buyNotional += r.buyPrice * r.qty;
+      g.sellNotional += r.sellPrice * r.qty;
+      if (r.openDate < g.openDate) g.openDate = r.openDate;
     }
   }
+  const coalesced = [...groups.values()].map((g) => {
+    const { buyNotional, sellNotional, closeIdx, ...rest } = g;
+    return { ...rest, buyPrice: buyNotional / g.qty, sellPrice: sellNotional / g.qty };
+  });
 
   return { realized: coalesced, openPositions };
 }
