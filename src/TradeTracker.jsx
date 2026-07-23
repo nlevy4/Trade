@@ -73,7 +73,6 @@ function computeRealized(trades) {
             pnl: (lot.price - t.price) * matched * mult,
             isOption: mult === 100, isShort: true,
             account: lot.account || t.account,
-            closeIdx: t._idx,
           });
           lot.qty -= matched;
           remaining -= matched;
@@ -97,7 +96,6 @@ function computeRealized(trades) {
             pnl: (t.price - lot.price) * matched * mult,
             isOption: mult === 100, isShort: false,
             account: lot.account || t.account,
-            closeIdx: t._idx,
           });
           lot.qty -= matched;
           remaining -= matched;
@@ -140,15 +138,18 @@ function computeRealized(trades) {
     });
   }
 
-  // Group all legs closed by the same order (e.g. one sell filled against several
-  // buy lots at different prices) into a single row with a qty-weighted avg price,
-  // instead of one row per matched lot.
+  // Group legs closed at the same price on the same day (e.g. one sell filled
+  // against several buy lots at different prices, or several same-priced sell
+  // fills logged as separate records) into a single row with a qty-weighted
+  // avg entry price, instead of one row per matched lot/fill.
   const groups = new Map();
   for (const r of realized) {
-    let g = groups.get(r.closeIdx);
+    const closePrice = r.isShort ? r.buyPrice : r.sellPrice;
+    const key = `${r.symbol}|${r.account}|${r.closeDate}|${closePrice}|${r.isShort}`;
+    let g = groups.get(key);
     if (!g) {
       g = { ...r, buyNotional: r.buyPrice * r.qty, sellNotional: r.sellPrice * r.qty };
-      groups.set(r.closeIdx, g);
+      groups.set(key, g);
     } else {
       g.qty += r.qty;
       g.pnl += r.pnl;
@@ -158,7 +159,7 @@ function computeRealized(trades) {
     }
   }
   const coalesced = [...groups.values()].map((g) => {
-    const { buyNotional, sellNotional, closeIdx, ...rest } = g;
+    const { buyNotional, sellNotional, ...rest } = g;
     return { ...rest, buyPrice: buyNotional / g.qty, sellPrice: sellNotional / g.qty };
   });
 
