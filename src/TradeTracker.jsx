@@ -46,8 +46,36 @@ function parseOptionSymbol(raw) {
   return { root, right: rightLabel, strike, dateLabel, label: `${root} $${strikeLabel} ${rightLabel} · ${dateLabel}` };
 }
 
+// Builds a realized-trade row for one matched (lot, closing-transaction) pair.
+// isShort true means covering a short (txn is the buy, lot is the short-open sell).
+function closeLot(lot, txn, matched, mult, isShort) {
+  return {
+    symbol: txn.symbol, desc: txn.desc, qty: matched,
+    buyPrice: isShort ? txn.price : lot.price,
+    sellPrice: isShort ? lot.price : txn.price,
+    openDate: lot.date, closeDate: txn.date,
+    pnl: (isShort ? lot.price - txn.price : txn.price - lot.price) * matched * mult,
+    isOption: mult === 100, isShort,
+    account: lot.account || txn.account,
+    legs: [{ idx: txn._idx, qty: matched }, { idx: lot.idx, qty: matched }],
+  };
+}
+
+// Removes and returns the queue entry matching a manually-picked lot
+// (identified by its open date + price, since that survives array edits
+// better than a positional index), or null if there's no such lot anymore.
+function takeTargetedLot(queue, targetDate, targetPrice) {
+  if (targetDate == null || targetPrice == null) return null;
+  const pos = queue.findIndex((l) => l.date === targetDate && Math.abs(l.price - targetPrice) < 1e-6);
+  if (pos === -1) return null;
+  return { lot: queue[pos], pos };
+}
+
 // FIFO-match buy/sell legs per symbol. Handles both long trades (buy→sell)
-// and short trades like sold puts (sell→buy). Each direction uses its own lot queue.
+// and short trades like sold puts (sell→buy). Each direction uses its own lot
+// queue. A sell (or buy-to-close) can pin itself to a specific lot via
+// targetLotDate/targetLotPrice — set from the manual-trade lot picker — to
+// support cases like "sell against the lower-cost tax lot", ahead of FIFO.
 function computeRealized(trades) {
   const sorted = trades
     .map((t, idx) => ({ ...t, _idx: idx }))
@@ -64,18 +92,19 @@ function computeRealized(trades) {
       if (shortLots[key].length > 0) {
         // Buy-to-close a short position (e.g. buying back a sold put)
         let remaining = t.qty;
+        const targeted = takeTargetedLot(shortLots[key], t.targetLotDate, t.targetLotPrice);
+        if (targeted) {
+          const { lot, pos } = targeted;
+          const matched = Math.min(remaining, lot.qty);
+          realized.push(closeLot(lot, t, matched, mult, true));
+          lot.qty -= matched;
+          remaining -= matched;
+          if (lot.qty <= 1e-9) shortLots[key].splice(pos, 1);
+        }
         while (remaining > 1e-9 && shortLots[key].length) {
           const lot = shortLots[key][0];
           const matched = Math.min(remaining, lot.qty);
-          realized.push({
-            symbol: t.symbol, desc: t.desc, qty: matched,
-            buyPrice: t.price, sellPrice: lot.price,
-            openDate: lot.date, closeDate: t.date,
-            pnl: (lot.price - t.price) * matched * mult,
-            isOption: mult === 100, isShort: true,
-            account: lot.account || t.account,
-            legs: [{ idx: t._idx, qty: matched }, { idx: lot.idx, qty: matched }],
-          });
+          realized.push(closeLot(lot, t, matched, mult, true));
           lot.qty -= matched;
           remaining -= matched;
           if (lot.qty <= 1e-9) shortLots[key].shift();
@@ -88,18 +117,19 @@ function computeRealized(trades) {
       if (longLots[key].length > 0) {
         // Sell-to-close a long position
         let remaining = t.qty;
+        const targeted = takeTargetedLot(longLots[key], t.targetLotDate, t.targetLotPrice);
+        if (targeted) {
+          const { lot, pos } = targeted;
+          const matched = Math.min(remaining, lot.qty);
+          realized.push(closeLot(lot, t, matched, mult, false));
+          lot.qty -= matched;
+          remaining -= matched;
+          if (lot.qty <= 1e-9) longLots[key].splice(pos, 1);
+        }
         while (remaining > 1e-9 && longLots[key].length) {
           const lot = longLots[key][0];
           const matched = Math.min(remaining, lot.qty);
-          realized.push({
-            symbol: t.symbol, desc: t.desc, qty: matched,
-            buyPrice: lot.price, sellPrice: t.price,
-            openDate: lot.date, closeDate: t.date,
-            pnl: (t.price - lot.price) * matched * mult,
-            isOption: mult === 100, isShort: false,
-            account: lot.account || t.account,
-            legs: [{ idx: t._idx, qty: matched }, { idx: lot.idx, qty: matched }],
-          });
+          realized.push(closeLot(lot, t, matched, mult, false));
           lot.qty -= matched;
           remaining -= matched;
           if (lot.qty <= 1e-9) longLots[key].shift();
@@ -123,7 +153,7 @@ function computeRealized(trades) {
       account: remaining[0]?.account || '',
       openDate: remaining.reduce((min, l) => (!min || l.date < min ? l.date : min), null),
       isShort: false,
-      lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty })),
+      lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty, price: l.price, date: l.date })),
     });
   }
   for (const [key, arr] of Object.entries(shortLots)) {
@@ -137,7 +167,7 @@ function computeRealized(trades) {
       account: remaining[0]?.account || '',
       openDate: remaining.reduce((min, l) => (!min || l.date < min ? l.date : min), null),
       isShort: true,
-      lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty })),
+      lots: remaining.map((l) => ({ idx: l.idx, qty: l.qty, price: l.price, date: l.date })),
     });
   }
 
@@ -301,6 +331,15 @@ export default function TradeTracker() {
   const [showImport, setShowImport] = useState(false);
   const [importText, setImportText] = useState('');
   const [importNote, setImportNote] = useState(null);
+  const [showManualTrade, setShowManualTrade] = useState(false);
+  const [manualSymbol, setManualSymbol] = useState('');
+  const [manualSide, setManualSide] = useState('buy');
+  const [manualQty, setManualQty] = useState('');
+  const [manualPrice, setManualPrice] = useState('');
+  const [manualDate, setManualDate] = useState('');
+  const [manualAccount, setManualAccount] = useState('Individual');
+  const [manualDesc, setManualDesc] = useState('');
+  const [manualTargetLot, setManualTargetLot] = useState('');
   const [showPositions, setShowPositions] = useState(false);
   const [showTickerPnl, setShowTickerPnl] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
@@ -390,6 +429,42 @@ export default function TradeTracker() {
       setError(e.message || 'Could not parse that data');
     }
   }, [trades, notes, tradeNotes]);
+
+  // Adds a single hand-entered trade. A sell can pin itself to a specific
+  // open lot (picked in the UI below) via targetLotDate/targetLotPrice, so it
+  // matches against that lot instead of always taking the oldest one (FIFO).
+  const addManualTrade = useCallback(() => {
+    setError(null);
+    const symbol = manualSymbol.trim().toUpperCase();
+    const qty = parseFloat(manualQty);
+    const price = parseFloat(manualPrice);
+    const account = manualAccount.trim() || 'Individual';
+    if (!symbol || !manualDate || !(qty > 0) || !(price > 0)) {
+      setError('Fill in symbol, date, a positive quantity, and a positive price.');
+      return;
+    }
+    let targetLotDate = null, targetLotPrice = null;
+    if (manualSide === 'sell' && manualTargetLot) {
+      const [d, p] = manualTargetLot.split('|');
+      targetLotDate = d;
+      targetLotPrice = Number(p);
+    }
+    const newTrade = {
+      date: manualDate, symbol, desc: manualDesc.trim(), side: manualSide, qty, price, account,
+      ...(targetLotDate ? { targetLotDate, targetLotPrice } : {}),
+    };
+    const merged = [...trades, newTrade].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    setTrades(merged);
+    const now = new Date().toISOString();
+    setLastSynced(now);
+    const d = new Date(merged[merged.length - 1].date + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data', JSON.stringify({ trades: merged, lastSynced: now, notes, tradeNotes })); } catch (_) {}
+    setShowManualTrade(false);
+    setManualSymbol(''); setManualQty(''); setManualPrice(''); setManualDesc(''); setManualTargetLot('');
+    setImportNote('Trade added.');
+  }, [manualSymbol, manualSide, manualQty, manualPrice, manualDate, manualAccount, manualDesc, manualTargetLot, trades, notes, tradeNotes]);
 
   const clearData = useCallback(() => {
     if (!window.confirm('Clear all Robinhood trade data and notes? This cannot be undone.')) return;
@@ -566,6 +641,16 @@ export default function TradeTracker() {
   // ── Derived data ──────────────────────────────────────────────────────────────
   const { realized: rhRealized, openPositions } = useMemo(() => computeRealized(trades), [trades]);
 
+  // Open (non-short) lots for whatever symbol/account is currently typed into
+  // the manual-trade form, so a sell can be pinned to a specific one.
+  const manualLotOptions = useMemo(() => {
+    if (manualSide !== 'sell' || !manualSymbol.trim()) return [];
+    const symbol = manualSymbol.trim().toUpperCase();
+    const account = manualAccount.trim() || 'Individual';
+    const pos = openPositions.find((p) => p.symbol === symbol && p.account === account && !p.isShort);
+    return pos ? pos.lots.slice().sort((a, b) => (a.date < b.date ? -1 : 1)) : [];
+  }, [manualSide, manualSymbol, manualAccount, openPositions]);
+
   const realized = useMemo(() =>
     activeAccount === 'robinhood' ? rhRealized : schwabRealized,
     [activeAccount, rhRealized, schwabRealized]
@@ -733,10 +818,16 @@ export default function TradeTracker() {
             </button>
           )}
           {activeAccount === 'robinhood' ? (
-            <button onClick={() => { setShowImport(s => !s); setImportNote(null); }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, background: showImport ? COLORS.panel2 : COLORS.text, color: showImport ? COLORS.muted : COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              {showImport ? 'Cancel' : 'Import data'}
-            </button>
+            <>
+              <button onClick={() => { setShowManualTrade(s => !s); setImportNote(null); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, background: showManualTrade ? COLORS.panel2 : 'none', color: showManualTrade ? COLORS.muted : COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                {showManualTrade ? 'Cancel' : 'Manual trade'}
+              </button>
+              <button onClick={() => { setShowImport(s => !s); setImportNote(null); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, background: showImport ? COLORS.panel2 : COLORS.text, color: showImport ? COLORS.muted : COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                {showImport ? 'Cancel' : 'Import data'}
+              </button>
+            </>
           ) : (
             <button onClick={() => { setShowSchwabImport(s => !s); setImportNote(null); }}
               style={{ display: 'flex', alignItems: 'center', gap: 8, background: showSchwabImport ? COLORS.panel2 : COLORS.text, color: showSchwabImport ? COLORS.muted : COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -745,6 +836,67 @@ export default function TradeTracker() {
           )}
         </div>
       </div>
+
+      {/* ── Manual trade entry panel ── */}
+      {activeAccount === 'robinhood' && showManualTrade && (
+        <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 10 }}>Add a trade by hand</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 10 }}>
+            <div>
+              <label style={labelStyle}>Symbol</label>
+              <input value={manualSymbol} onChange={(e) => setManualSymbol(e.target.value)} placeholder="AAPL"
+                style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Side</label>
+              <select value={manualSide} onChange={(e) => { setManualSide(e.target.value); setManualTargetLot(''); }} style={inputStyle}>
+                <option value="buy">Buy</option>
+                <option value="sell">Sell</option>
+              </select>
+            </div>
+            <div>
+              <label style={labelStyle}>Quantity</label>
+              <input type="number" value={manualQty} onChange={(e) => setManualQty(e.target.value)} placeholder="10" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Price</label>
+              <input type="number" step="0.01" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} placeholder="195.20" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Date</label>
+              <input type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Account</label>
+              <input value={manualAccount} onChange={(e) => setManualAccount(e.target.value)} placeholder="Individual" style={inputStyle} />
+            </div>
+          </div>
+          <div style={{ marginBottom: 10 }}>
+            <label style={labelStyle}>Note (optional)</label>
+            <input value={manualDesc} onChange={(e) => setManualDesc(e.target.value)} placeholder="" style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} />
+          </div>
+          {manualSide === 'sell' && manualLotOptions.length > 0 && (
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>Which lot is this selling?</label>
+              <select value={manualTargetLot} onChange={(e) => setManualTargetLot(e.target.value)} style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}>
+                <option value="">Auto (FIFO — oldest lot first)</option>
+                {manualLotOptions.map((lot, i) => (
+                  <option key={i} value={`${lot.date}|${lot.price}`}>
+                    {lot.qty} sh @ {lot.price.toFixed(2)} · opened {lot.date}
+                  </option>
+                ))}
+              </select>
+              <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 4 }}>
+                Pick the specific tax lot you sold (e.g. the lower-cost one), instead of the default oldest-first matching.
+              </div>
+            </div>
+          )}
+          <button onClick={addManualTrade}
+            style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+            Add trade
+          </button>
+        </div>
+      )}
 
       {/* ── Robinhood import panel ── */}
       {activeAccount === 'robinhood' && showImport && (
@@ -1378,3 +1530,5 @@ function StatCard({ label, value, sub, color, onClick, square }) {
 }
 
 const navBtnStyle = { background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.muted, padding: '4px 7px', display: 'flex', alignItems: 'center', cursor: 'pointer' };
+const labelStyle = { display: 'block', fontSize: 10.5, color: COLORS.dim, marginBottom: 3 };
+const inputStyle = { width: '100%', background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '6px 8px', fontSize: 12.5, fontFamily: SANS, boxSizing: 'border-box', outline: 'none' };
