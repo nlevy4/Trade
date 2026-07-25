@@ -1,6 +1,6 @@
 # Trade Tracker
 
-A local React app for tracking your trade P&L, calendar view, and open positions.
+Personal app for tracking your trade P&L, calendar view, and open positions.
 
 ## Setup
 
