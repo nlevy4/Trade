@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from "react";
-import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2 } from "lucide-react";
+import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2, SquarePen, Download } from "lucide-react";
 import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { APP_VERSION } from "./version";
 
@@ -202,6 +202,22 @@ function computeRealized(trades) {
   return { realized: coalesced, openPositions };
 }
 
+// A realized row can only be safely hand-edited when it maps 1:1 onto a single
+// underlying buy and a single sell (not merged/split across several lots) —
+// otherwise there's no unambiguous underlying trade to write the edit back to.
+// Returns the raw trades-array indices to update, or null if not editable.
+function simpleTradeLegs(t) {
+  if (!t.legs || t.legs.length !== 2) return null;
+  const [a, b] = t.legs;
+  if (a.idx === b.idx || a.qty !== t.qty || b.qty !== t.qty) return null;
+  return t.isShort ? { buyIdx: a.idx, sellIdx: b.idx } : { buyIdx: b.idx, sellIdx: a.idx };
+}
+
+function csvValue(v) {
+  const s = String(v ?? '');
+  return /[",\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+}
+
 // Display label for a trade — handles Robinhood OCC symbols and Schwab format
 function getTradeDisplayLabel(t) {
   if (t.tradeType) {
@@ -345,6 +361,8 @@ export default function TradeTracker() {
   const [showBackup, setShowBackup] = useState(false);
   const [compactCalendar, setCompactCalendar] = useState(false);
   const [editingNoteKey, setEditingNoteKey] = useState(null);
+  const [editingTrade, setEditingTrade] = useState(null);
+  const [chartAccount, setChartAccount] = useState('all');
   const [selectedDay, setSelectedDay] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -576,6 +594,48 @@ export default function TradeTracker() {
     }
   }, [activeAccount]);
 
+  // Writes edited field values back to the underlying trade(s). For Robinhood
+  // this only works on rows with an unambiguous single buy + single sell
+  // (see simpleTradeLegs); for Schwab every row is already 1:1.
+  const updateTrade = useCallback((t, fields) => {
+    if (activeAccount === 'robinhood') {
+      const legs = simpleTradeLegs(t);
+      if (!legs) return;
+      // For shorts the buy is the *closing* leg and the sell is the *opening*
+      // leg (opposite of a long trade), so the date each one takes is flipped.
+      const buyDate = t.isShort ? fields.closeDate : fields.openDate;
+      const sellDate = t.isShort ? fields.openDate : fields.closeDate;
+      setTrades((prev) => {
+        const updated = prev
+          .map((tr, i) => {
+            if (i === legs.buyIdx) return { ...tr, price: fields.buyPrice, date: buyDate, qty: fields.qty };
+            if (i === legs.sellIdx) return { ...tr, price: fields.sellPrice, date: sellDate, qty: fields.qty };
+            return tr;
+          })
+          .sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+        try {
+          const raw = localStorage.getItem('trades-data');
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem('trades-data', JSON.stringify({ ...parsed, trades: updated }));
+        } catch (_) {}
+        return updated;
+      });
+    } else {
+      setSchwabRealized((prev) => {
+        const updated = prev
+          .map((r) => (r === t ? { ...r, ...fields, isOption: fields.tradeType.toLowerCase() !== 'shares' } : r))
+          .sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1));
+        try {
+          const raw = localStorage.getItem('trades-data-schwab');
+          const parsed = raw ? JSON.parse(raw) : {};
+          localStorage.setItem('trades-data-schwab', JSON.stringify({ ...parsed, realized: updated }));
+        } catch (_) {}
+        return updated;
+      });
+    }
+    setEditingTrade(null);
+  }, [activeAccount]);
+
   // ── Schwab import (TSV from Excel paste) ─────────────────────────────────────
   const importSchwabTrades = useCallback((rawText) => {
     setError(null);
@@ -658,6 +718,18 @@ export default function TradeTracker() {
 
   const activeTradeNotes = activeAccount === 'robinhood' ? tradeNotes : schwabTradeNotes;
 
+  // Distinct sub-accounts (e.g. "Individual", "Roth IRA") present in the
+  // current account's trades, for the Cumulative P&L chart's account toggle.
+  const subAccounts = useMemo(() => {
+    const set = new Set();
+    for (const r of realized) if (r.account) set.add(r.account);
+    return [...set].sort();
+  }, [realized]);
+
+  useEffect(() => {
+    if (chartAccount !== 'all' && !subAccounts.includes(chartAccount)) setChartAccount('all');
+  }, [subAccounts, chartAccount]);
+
   const dayPnl = useMemo(() => {
     const map = {};
     for (const r of realized) {
@@ -694,10 +766,13 @@ export default function TradeTracker() {
   }, [realized]);
 
   const equityCurve = useMemo(() => {
-    const days = Object.entries(dayPnl).sort((a, b) => (a[0] < b[0] ? -1 : 1));
+    const filtered = chartAccount === 'all' ? realized : realized.filter((r) => r.account === chartAccount);
+    const map = {};
+    for (const r of filtered) map[r.closeDate] = (map[r.closeDate] || 0) + r.pnl;
+    const days = Object.entries(map).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     let cum = 0;
-    return days.map(([date, d]) => { cum += d.pnl; return { date: date.slice(5), value: Math.round(cum * 100) / 100 }; });
-  }, [dayPnl]);
+    return days.map(([date, pnl]) => { cum += pnl; return { date: date.slice(5), value: Math.round(cum * 100) / 100 }; });
+  }, [realized, chartAccount]);
 
   const { yMin, yMax, zeroOffset } = useMemo(() => {
     const values = equityCurve.map((d) => d.value);
@@ -773,6 +848,24 @@ export default function TradeTracker() {
   const selectedTrades = selectedDay ? (dayPnl[selectedDay]?.trades || []) : realized.slice().reverse().slice(0, 20);
   const hasData = activeAccount === 'robinhood' ? trades.length > 0 : schwabRealized.length > 0;
 
+  const exportCsv = useCallback(() => {
+    const header = ['Symbol', 'Type', 'Side', 'Qty', 'Buy Price', 'Sell Price', 'Open Date', 'Close Date', 'P&L', 'Account'];
+    const rows = realized.map((r) => [
+      getTradeDisplayLabel(r), r.isOption ? 'Option' : 'Share', r.isShort ? 'Short' : 'Long',
+      r.qty, r.buyPrice.toFixed(2), r.sellPrice.toFixed(2), r.openDate, r.closeDate, r.pnl.toFixed(2), r.account,
+    ]);
+    const csv = [header, ...rows].map((row) => row.map(csvValue).join(',')).join('\r\n');
+    const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `trades-${activeAccount}-${new Date().toISOString().slice(0, 10)}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    URL.revokeObjectURL(url);
+  }, [realized, activeAccount]);
+
   useLayoutEffect(() => {
     const el = calendarRef.current;
     if (!el) return;
@@ -811,6 +904,12 @@ export default function TradeTracker() {
             style={{ background: 'none', color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
             Backup
           </button>
+          {hasData && (
+            <button onClick={exportCsv} title="Export realized trades as CSV"
+              style={{ display: 'flex', alignItems: 'center', gap: 6, background: 'none', color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+              <Download size={13} /> CSV
+            </button>
+          )}
           {hasData && (
             <button onClick={() => setShowTickerPnl(true)}
               style={{ background: 'none', color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -999,7 +1098,23 @@ export default function TradeTracker() {
           </div>
 
           <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '18px 18px 6px', marginBottom: 20 }}>
-            <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 10 }}>Cumulative P&L</div>
+            <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
+              <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>Cumulative P&L</div>
+              {subAccounts.length > 1 && (
+                <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2, flexWrap: 'wrap' }}>
+                  <button onClick={() => setChartAccount('all')}
+                    style={{ background: chartAccount === 'all' ? COLORS.text : 'none', color: chartAccount === 'all' ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                    Combined
+                  </button>
+                  {subAccounts.map((acct) => (
+                    <button key={acct} onClick={() => setChartAccount(acct)}
+                      style={{ background: chartAccount === acct ? COLORS.text : 'none', color: chartAccount === acct ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                      {acct}
+                    </button>
+                  ))}
+                </div>
+              )}
+            </div>
             <ResponsiveContainer width="100%" height={160}>
               <AreaChart data={equityCurve} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
                 <defs>
@@ -1135,6 +1250,7 @@ export default function TradeTracker() {
                     const nk = noteKey(t);
                     const hasNote = !!activeTradeNotes[nk];
                     const isEditing = editingNoteKey === nk;
+                    const canEditTrade = activeAccount === 'schwab' || !!simpleTradeLegs(t);
                     return (
                       <div key={i} style={{ borderBottom: `1px solid ${COLORS.border}`, paddingBottom: 8 }}>
                         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
@@ -1153,6 +1269,12 @@ export default function TradeTracker() {
                               <Pencil size={12} />
                               {hasNote && !isEditing && <span style={{ position: 'absolute', top: 2, right: 2, width: 4, height: 4, borderRadius: '50%', background: COLORS.amber }} />}
                             </button>
+                            {canEditTrade && (
+                              <button onClick={() => setEditingTrade(t)} title="Edit this trade"
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: COLORS.dim, display: 'flex', alignItems: 'center' }}>
+                                <SquarePen size={12} />
+                              </button>
+                            )}
                             <button onClick={() => deleteTrade(t)} title="Delete this trade"
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: COLORS.dim, display: 'flex', alignItems: 'center' }}>
                               <Trash2 size={12} />
@@ -1282,6 +1404,116 @@ export default function TradeTracker() {
         <BackupModal onClose={() => setShowBackup(false)} />
       )}
 
+      {editingTrade && (
+        <EditTradeModal trade={editingTrade} isRobinhood={activeAccount === 'robinhood'}
+          onSave={(fields) => updateTrade(editingTrade, fields)} onClose={() => setEditingTrade(null)} />
+      )}
+
+    </div>
+  );
+}
+
+function EditTradeModal({ trade, isRobinhood, onSave, onClose }) {
+  const [buyPrice, setBuyPrice] = useState(String(trade.buyPrice));
+  const [sellPrice, setSellPrice] = useState(String(trade.sellPrice));
+  const [qty, setQty] = useState(String(trade.qty));
+  const [openDate, setOpenDate] = useState(trade.openDate);
+  const [closeDate, setCloseDate] = useState(trade.closeDate);
+  const [symbol, setSymbol] = useState(trade.symbol);
+  const [tradeType, setTradeType] = useState(trade.tradeType || 'shares');
+  const [expiration, setExpiration] = useState(trade.expiration || '');
+  const [account, setAccount] = useState(trade.account || '');
+  const [pnl, setPnl] = useState(String(trade.pnl));
+  const [error, setError] = useState(null);
+
+  const save = () => {
+    const q = parseFloat(qty), bp = parseFloat(buyPrice), sp = parseFloat(sellPrice);
+    if (!(q > 0) || !(bp > 0) || !(sp > 0) || !openDate || !closeDate) {
+      setError('Quantity, buy price, sell price, and both dates are required.');
+      return;
+    }
+    if (isRobinhood) {
+      onSave({ buyPrice: bp, sellPrice: sp, qty: q, openDate, closeDate });
+    } else {
+      const p = parseFloat(pnl);
+      if (!symbol.trim() || Number.isNaN(p)) {
+        setError('Symbol and P&L are required.');
+        return;
+      }
+      onSave({ symbol: symbol.trim().toUpperCase(), tradeType, expiration: expiration.trim(), account: account.trim(), buyPrice: bp, sellPrice: sp, qty: q, openDate, closeDate, pnl: p });
+    }
+  };
+
+  return (
+    <div onClick={onClose}
+      style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100 }}>
+      <div onClick={(e) => e.stopPropagation()}
+        style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20, width: '100%', maxWidth: 420, maxHeight: '85vh', overflowY: 'auto', fontFamily: SANS, color: COLORS.text }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
+          <div style={{ fontSize: 15, fontWeight: 700 }}>Edit Trade</div>
+          <button onClick={onClose}
+            style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}>×</button>
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
+          {!isRobinhood && (
+            <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+              <div>
+                <label style={labelStyle}>Symbol</label>
+                <input value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Type</label>
+                <input value={tradeType} onChange={(e) => setTradeType(e.target.value)} placeholder="shares / Calls / Puts" style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Expiration</label>
+                <input value={expiration} onChange={(e) => setExpiration(e.target.value)} style={inputStyle} />
+              </div>
+              <div>
+                <label style={labelStyle}>Account</label>
+                <input value={account} onChange={(e) => setAccount(e.target.value)} style={inputStyle} />
+              </div>
+            </div>
+          )}
+          <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: 10 }}>
+            <div>
+              <label style={labelStyle}>Quantity</label>
+              <input type="number" value={qty} onChange={(e) => setQty(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>{isRobinhood && trade.isShort ? 'Cover price' : 'Buy price'}</label>
+              <input type="number" step="0.01" value={buyPrice} onChange={(e) => setBuyPrice(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>{isRobinhood && trade.isShort ? 'Open (short) price' : 'Sell price'}</label>
+              <input type="number" step="0.01" value={sellPrice} onChange={(e) => setSellPrice(e.target.value)} style={inputStyle} />
+            </div>
+            {!isRobinhood && (
+              <div>
+                <label style={labelStyle}>P&L</label>
+                <input type="number" step="0.01" value={pnl} onChange={(e) => setPnl(e.target.value)} style={inputStyle} />
+              </div>
+            )}
+            <div>
+              <label style={labelStyle}>Open date</label>
+              <input type="date" value={openDate} onChange={(e) => setOpenDate(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Close date</label>
+              <input type="date" value={closeDate} onChange={(e) => setCloseDate(e.target.value)} style={inputStyle} />
+            </div>
+          </div>
+          {error && (
+            <div style={{ display: 'flex', gap: 8, alignItems: 'center', background: 'rgba(240,80,110,0.1)', border: `1px solid ${COLORS.red}`, color: COLORS.red, borderRadius: 8, padding: '8px 12px', fontSize: 12.5 }}>
+              <AlertCircle size={14} /> {error}
+            </div>
+          )}
+          <button onClick={save}
+            style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '8px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', alignSelf: 'flex-start' }}>
+            Save changes
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
