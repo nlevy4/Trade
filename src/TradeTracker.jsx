@@ -340,6 +340,16 @@ export default function TradeTracker() {
   const [schwabTradeNotes, setSchwabTradeNotes] = useState({});
   const [schwabImportText, setSchwabImportText] = useState('');
   const [showSchwabImport, setShowSchwabImport] = useState(false);
+  const [manualSchwabSymbol, setManualSchwabSymbol] = useState('');
+  const [manualSchwabType, setManualSchwabType] = useState('shares');
+  const [manualSchwabExpiration, setManualSchwabExpiration] = useState('');
+  const [manualSchwabAccount, setManualSchwabAccount] = useState('Individual');
+  const [manualSchwabQty, setManualSchwabQty] = useState('');
+  const [manualSchwabBuyPrice, setManualSchwabBuyPrice] = useState('');
+  const [manualSchwabSellPrice, setManualSchwabSellPrice] = useState('');
+  const [manualSchwabOpenDate, setManualSchwabOpenDate] = useState('');
+  const [manualSchwabCloseDate, setManualSchwabCloseDate] = useState('');
+  const [manualSchwabPnl, setManualSchwabPnl] = useState('');
 
   // ── Shared UI state ──────────────────────────────────────────────────────────
   const [activeAccount, setActiveAccount] = useState('robinhood');
@@ -483,6 +493,47 @@ export default function TradeTracker() {
     setManualSymbol(''); setManualQty(''); setManualPrice(''); setManualDesc(''); setManualTargetLot('');
     setImportNote('Trade added.');
   }, [manualSymbol, manualSide, manualQty, manualPrice, manualDate, manualAccount, manualDesc, manualTargetLot, trades, notes, tradeNotes]);
+
+  // Suggested P&L for a manual Schwab entry, used to prefill the field —
+  // real fills can differ (commissions, multi-leg spreads) so it stays editable.
+  const manualSchwabAutoPnl = useMemo(() => {
+    const q = parseFloat(manualSchwabQty), bp = parseFloat(manualSchwabBuyPrice), sp = parseFloat(manualSchwabSellPrice);
+    if (!(q > 0) || !(bp > 0) || !(sp > 0)) return null;
+    const mult = manualSchwabType.trim().toLowerCase() !== 'shares' ? 100 : 1;
+    return (sp - bp) * q * mult;
+  }, [manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabType]);
+
+  // Adds a single hand-entered, already-closed Schwab trade (Schwab data is
+  // stored as realized round-trips, unlike Robinhood's open buy/sell legs).
+  const addManualSchwabTrade = useCallback(() => {
+    setError(null);
+    const symbol = manualSchwabSymbol.trim().toUpperCase();
+    const qty = parseFloat(manualSchwabQty);
+    const buyPrice = parseFloat(manualSchwabBuyPrice);
+    const sellPrice = parseFloat(manualSchwabSellPrice);
+    const pnl = manualSchwabPnl.trim() === '' ? manualSchwabAutoPnl : parseFloat(manualSchwabPnl);
+    if (!symbol || !manualSchwabOpenDate || !manualSchwabCloseDate || !(qty > 0) || !(buyPrice > 0) || !(sellPrice > 0) || pnl == null || Number.isNaN(pnl)) {
+      setError('Fill in symbol, both dates, a positive quantity, and positive buy/sell prices.');
+      return;
+    }
+    const tradeType = manualSchwabType.trim() || 'shares';
+    const newTrade = {
+      symbol, tradeType, expiration: manualSchwabExpiration.trim(),
+      qty, buyPrice, sellPrice, openDate: manualSchwabOpenDate, closeDate: manualSchwabCloseDate, pnl,
+      isOption: tradeType.toLowerCase() !== 'shares',
+      account: manualSchwabAccount.trim() || 'Individual', desc: '',
+    };
+    const merged = [...schwabRealized, newTrade].sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1));
+    setSchwabRealized(merged);
+    const d = new Date(newTrade.closeDate + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: merged, notes: schwabNotes, tradeNotes: schwabTradeNotes })); } catch (_) {}
+    setShowManualTrade(false);
+    setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty('');
+    setManualSchwabBuyPrice(''); setManualSchwabSellPrice(''); setManualSchwabPnl('');
+    setImportNote('Trade added.');
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabOpenDate, manualSchwabCloseDate, manualSchwabPnl, manualSchwabAutoPnl, schwabRealized, schwabNotes, schwabTradeNotes]);
 
   const clearData = useCallback(() => {
     if (!window.confirm('Clear all Robinhood trade data and notes? This cannot be undone.')) return;
@@ -685,6 +736,7 @@ export default function TradeTracker() {
     setSelectedDay(null);
     setShowImport(false);
     setShowSchwabImport(false);
+    setShowManualTrade(false);
     setImportNote(null);
     setError(null);
     const arr = acct === 'robinhood' ? trades : schwabRealized;
@@ -928,10 +980,16 @@ export default function TradeTracker() {
               </button>
             </>
           ) : (
-            <button onClick={() => { setShowSchwabImport(s => !s); setImportNote(null); }}
-              style={{ display: 'flex', alignItems: 'center', gap: 8, background: showSchwabImport ? COLORS.panel2 : COLORS.text, color: showSchwabImport ? COLORS.muted : COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
-              {showSchwabImport ? 'Cancel' : 'Import trades'}
-            </button>
+            <>
+              <button onClick={() => { setShowManualTrade(s => !s); setImportNote(null); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, background: showManualTrade ? COLORS.panel2 : 'none', color: showManualTrade ? COLORS.muted : COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                {showManualTrade ? 'Cancel' : 'Manual trade'}
+              </button>
+              <button onClick={() => { setShowSchwabImport(s => !s); setImportNote(null); }}
+                style={{ display: 'flex', alignItems: 'center', gap: 8, background: showSchwabImport ? COLORS.panel2 : COLORS.text, color: showSchwabImport ? COLORS.muted : COLORS.bg, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
+                {showSchwabImport ? 'Cancel' : 'Import trades'}
+              </button>
+            </>
           )}
         </div>
       </div>
@@ -991,6 +1049,60 @@ export default function TradeTracker() {
             </div>
           )}
           <button onClick={addManualTrade}
+            style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
+            Add trade
+          </button>
+        </div>
+      )}
+
+      {/* ── Schwab manual trade entry panel ── */}
+      {activeAccount === 'schwab' && showManualTrade && (
+        <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
+          <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 10 }}>Add a closed trade by hand</div>
+          <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 10 }}>
+            <div>
+              <label style={labelStyle}>Symbol</label>
+              <input value={manualSchwabSymbol} onChange={(e) => setManualSchwabSymbol(e.target.value)} placeholder="AAPL" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Type</label>
+              <input value={manualSchwabType} onChange={(e) => setManualSchwabType(e.target.value)} placeholder="shares / Calls / Puts" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Expiration</label>
+              <input value={manualSchwabExpiration} onChange={(e) => setManualSchwabExpiration(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Account</label>
+              <input value={manualSchwabAccount} onChange={(e) => setManualSchwabAccount(e.target.value)} placeholder="Individual" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Quantity</label>
+              <input type="number" value={manualSchwabQty} onChange={(e) => setManualSchwabQty(e.target.value)} placeholder="10" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Buy price</label>
+              <input type="number" step="0.01" value={manualSchwabBuyPrice} onChange={(e) => setManualSchwabBuyPrice(e.target.value)} placeholder="195.20" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Sell price</label>
+              <input type="number" step="0.01" value={manualSchwabSellPrice} onChange={(e) => setManualSchwabSellPrice(e.target.value)} placeholder="201.50" style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Open date</label>
+              <input type="date" value={manualSchwabOpenDate} onChange={(e) => setManualSchwabOpenDate(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>Close date</label>
+              <input type="date" value={manualSchwabCloseDate} onChange={(e) => setManualSchwabCloseDate(e.target.value)} style={inputStyle} />
+            </div>
+            <div>
+              <label style={labelStyle}>P&L</label>
+              <input type="number" step="0.01" value={manualSchwabPnl} onChange={(e) => setManualSchwabPnl(e.target.value)}
+                placeholder={manualSchwabAutoPnl != null ? manualSchwabAutoPnl.toFixed(2) : '0.00'} style={inputStyle} />
+            </div>
+          </div>
+          <button onClick={addManualSchwabTrade}
             style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
             Add trade
           </button>
