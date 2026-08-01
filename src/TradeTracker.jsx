@@ -1270,8 +1270,8 @@ export default function TradeTracker() {
                     <span style={{ width: 10, height: 10, borderRadius: 2, background: compactCalendar ? COLORS.text : COLORS.dim, display: 'inline-block' }} />
                   </button>
                   {monthPnl != null && (
-                    <div style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: monthPnl >= 0 ? COLORS.green : COLORS.red }}>
-                      {fmt(monthPnl)}
+                    <div style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: compactCalendar ? COLORS.dim : (monthPnl >= 0 ? COLORS.green : COLORS.red) }}>
+                      {compactCalendar ? '****' : fmt(monthPnl)}
                     </div>
                   )}
                 </div>
