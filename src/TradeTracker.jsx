@@ -1349,8 +1349,16 @@ export default function TradeTracker() {
 
             {/* Trade list */}
             <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, boxSizing: 'border-box', alignSelf: 'start', height: calHeight ?? undefined, maxHeight: calHeight ?? 360, overflowY: 'auto' }}>
-              <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 12 }}>
-                {selectedDay ? `Trades · ${selectedDay}` : 'Recent realized trades'}
+              <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
+                <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>
+                  {selectedDay ? `Trades · ${selectedDay}` : 'Recent realized trades'}
+                </div>
+                {selectedDay && selectedTrades.length > 0 && (
+                  <button onClick={() => deleteDay(selectedDay, selectedTrades)} title="Delete all trades for this day"
+                    style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', padding: 2, display: 'flex', alignItems: 'center' }}>
+                    <Trash2 size={13} />
+                  </button>
+                )}
               </div>
               {selectedTrades.length === 0 ? (
                 <div style={{ fontSize: 12, color: COLORS.dim }}>No closed trades on this day.</div>
