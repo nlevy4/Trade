@@ -748,6 +748,48 @@ export default function TradeTracker() {
     });
   }, []);
 
+  // Sells (or buys-to-cover, for a short) part or all of an open Robinhood
+  // position directly from the Open Positions modal — same quick-trim
+  // shortcut as Schwab's, without reopening the manual-trade form and
+  // retyping the symbol/account. FIFO handles matching against the
+  // position's lot(s) same as any other manually-entered trade.
+  const trimRobinhoodPosition = useCallback((position) => {
+    const opt = parseOptionSymbol(position.symbol);
+    const label = opt ? opt.label : position.symbol;
+    const unit = opt ? 'contracts' : 'shares';
+    const action = position.isShort ? 'Buy to cover' : 'Sell';
+    const qtyStr = window.prompt(`${action} how many of the ${position.qty} ${unit} of ${label}?`, String(position.qty));
+    if (qtyStr == null) return;
+    const qty = parseFloat(qtyStr);
+    if (!(qty > 0) || qty > position.qty + 1e-9) {
+      window.alert(`Enter a quantity between 0 and ${position.qty}.`);
+      return;
+    }
+    const priceStr = window.prompt(`${action} price?`);
+    if (priceStr == null) return;
+    const price = parseFloat(priceStr);
+    if (!(price > 0)) {
+      window.alert('Enter a positive price.');
+      return;
+    }
+    const dateStr = window.prompt('Date? (YYYY-MM-DD)', new Date().toISOString().slice(0, 10));
+    if (dateStr == null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      window.alert('Enter the date as YYYY-MM-DD.');
+      return;
+    }
+    const newTrade = { date: dateStr, symbol: position.symbol, desc: '', side: position.isShort ? 'buy' : 'sell', qty, price, account: position.account };
+    const merged = [...trades, newTrade].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    setTrades(merged);
+    const now = new Date().toISOString();
+    setLastSynced(now);
+    const d = new Date(dateStr + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data', JSON.stringify({ trades: merged, lastSynced: now, notes, tradeNotes })); } catch (_) {}
+    setImportNote('Trade added.');
+  }, [trades, notes, tradeNotes]);
+
   // Deletes every realized trade that closed on a given day. For Robinhood this
   // walks each trade's contributing legs and trims/removes the underlying buy
   // and sell rows; for Schwab it just drops the matching imported rows.
@@ -1817,12 +1859,10 @@ export default function TradeTracker() {
                                     {p.account && <div style={{ fontWeight: 400, color: COLORS.dim, fontSize: 9.5 }}>{p.account}</div>}
                                   </div>
                                   <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
-                                    {activeAccount === 'schwab' && (
-                                      <button onClick={() => trimSchwabPosition(p._raw)} title="Sell some or all of this position"
-                                        style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.text, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
-                                        <TrendingDown size={11} />
-                                      </button>
-                                    )}
+                                    <button onClick={() => activeAccount === 'robinhood' ? trimRobinhoodPosition(p) : trimSchwabPosition(p._raw)} title="Sell some or all of this position"
+                                      style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.text, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
+                                      <TrendingDown size={11} />
+                                    </button>
                                     <button onClick={() => activeAccount === 'robinhood' ? deletePosition(p) : deleteSchwabOpenPosition(p._raw)} title="Delete this position"
                                       style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.red, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
                                       <Trash2 size={11} />
@@ -2244,4 +2284,4 @@ function StatCard({ label, value, sub, color, onClick, square }) {
 
 const navBtnStyle = { background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.muted, padding: '4px 7px', display: 'flex', alignItems: 'center', cursor: 'pointer' };
 const labelStyle = { display: 'block', fontSize: 10.5, color: COLORS.dim, marginBottom: 3 };
-const inputStyle = { width: '100%', background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '6px 8px', fontSize: 12.5, fontFamily: SANS, boxSizing: 'border-box', outline: 'none' };
+const inputStyle = { width: '100%', background: COLORS.bg, color: COLORS.text, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '6px 8px', fontSize: 12.5, fontFamily: SANS, boxSizing: 'border-box', outline: 'none', colorScheme: 'dark' };
