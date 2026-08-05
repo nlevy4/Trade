@@ -458,6 +458,33 @@ export default function TradeTracker() {
     }
   }, [trades, notes, tradeNotes]);
 
+  // Fixes a position that shows as short only because its opening buy(s)
+  // are missing from the imported history (the sell had no long lot to
+  // match against). Inserts a synthetic buy dated the same day, placed
+  // *before* the sell in trade order so FIFO matches it as a normal long
+  // instead of leaving it open-short.
+  const convertShortToLong = useCallback((position) => {
+    const priceStr = window.prompt(
+      `What price did you actually buy the ${position.qty} share${position.qty === 1 ? '' : 's'} of ${position.symbol} at?\n\nThis adds the missing buy so it FIFO-matches as a normal long instead of a short.`
+    );
+    if (priceStr == null) return;
+    const price = parseFloat(priceStr);
+    if (!(price > 0)) {
+      window.alert('Enter a positive price.');
+      return;
+    }
+    const newTrade = {
+      date: position.openDate, symbol: position.symbol, desc: '', side: 'buy',
+      qty: position.qty, price, account: position.account,
+    };
+    const merged = [newTrade, ...trades].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    setTrades(merged);
+    const now = new Date().toISOString();
+    setLastSynced(now);
+    try { localStorage.setItem('trades-data', JSON.stringify({ trades: merged, lastSynced: now, notes, tradeNotes })); } catch (_) {}
+    setImportNote('Position reclassified as a long.');
+  }, [trades, notes, tradeNotes]);
+
   // Adds a single hand-entered trade. A sell can pin itself to a specific
   // open lot (picked in the UI below) via targetLotDate/targetLotPrice, so it
   // matches against that lot instead of always taking the oldest one (FIFO).
@@ -1470,6 +1497,12 @@ export default function TradeTracker() {
                                   <div style={{ fontSize: 11.5, fontWeight: 600, lineHeight: 1.3 }}>
                                     {opt ? opt.label : p.symbol}
                                     {p.isShort && <span style={{ fontSize: 9.5, fontWeight: 500, color: COLORS.amber, marginLeft: 4 }}>SHORT</span>}
+                                    {p.isShort && (
+                                      <button onClick={() => convertShortToLong(p)} title="Not actually a short — add the missing buy so it FIFO-matches as a normal long"
+                                        style={{ marginLeft: 4, background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', padding: 0, fontSize: 9.5, textDecoration: 'underline' }}>
+                                        fix
+                                      </button>
+                                    )}
                                     {p.account && <div style={{ fontWeight: 400, color: COLORS.dim, fontSize: 9.5 }}>{p.account}</div>}
                                   </div>
                                   <button onClick={() => deletePosition(p)} title="Delete this position"
