@@ -1194,26 +1194,31 @@ export default function TradeTracker() {
     return { yMin: min, yMax: max, zeroOffset: Math.min(1, Math.max(0, offset)) };
   }, [equityCurve]);
 
-  // One "candle" per day: walks that day's trades in order, running a
-  // cumulative total starting at 0 (the "open"). High/low are the extremes
-  // that running total touches during the day, close is where it ends up —
-  // so a day of morning losses that recovers to green gets a long lower
-  // wick with a body near the top, same shape as a bullish hammer.
+  // One "candle" per day on the same cumulative equity curve as the line
+  // chart — open is the running total carried in from the prior day's
+  // close (0 on day one), close is where it ends today, high/low are the
+  // extremes that running total touches as the day's trades close in
+  // order. So this reads like a normal stock chart: a day of morning
+  // losses that recovers to close green gets a wick poking below the
+  // open, same shape as a bullish hammer, but plotted against the whole
+  // account history instead of resetting to zero each day.
   const candleEquity = useMemo(() => {
     const filtered = chartAccount === 'all' ? realized : realized.filter((r) => r.account === chartAccount);
     const byDay = {};
     for (const r of filtered) (byDay[r.closeDate] || (byDay[r.closeDate] = [])).push(r.pnl);
     const days = Object.keys(byDay).sort();
     const round = (n) => Math.round(n * 100) / 100;
+    let running = 0;
     return days.map((date) => {
-      let cum = 0, high = 0, low = 0;
+      const open = running;
+      let cum = running, high = running, low = running;
       for (const pnl of byDay[date]) {
         cum += pnl;
         if (cum > high) high = cum;
         if (cum < low) low = cum;
       }
-      const close = round(cum);
-      return { date: date.slice(5), open: 0, close, high: round(high), low: round(low), range: [round(low), round(high)] };
+      running = cum;
+      return { date: date.slice(5), open: round(open), close: round(cum), high: round(high), low: round(low), range: [round(low), round(high)] };
     });
   }, [realized, chartAccount]);
 
@@ -1672,7 +1677,7 @@ export default function TradeTracker() {
 
           <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '18px 18px 6px', marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-              <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>{chartView === 'candles' ? 'Daily P&L' : 'Cumulative P&L'}</div>
+              <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>Cumulative P&L</div>
               <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
                 <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2 }}>
                   {['line', 'candles'].map((v) => (
@@ -2429,6 +2434,7 @@ function CandleTooltip({ active, payload, label }) {
     <div style={{ background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 11.5, fontFamily: MONO, color: COLORS.text }}>
       <div style={{ color: COLORS.muted, marginBottom: 3 }}>{label}</div>
       <div>Close <span style={{ color: d.close >= 0 ? COLORS.green : COLORS.red, fontWeight: 700 }}>{fmt(d.close)}</span></div>
+      <div style={{ color: COLORS.dim }}>Open {fmt(d.open)}</div>
       <div style={{ color: COLORS.dim }}>High {fmt(d.high)} · Low {fmt(d.low)}</div>
     </div>
   );
