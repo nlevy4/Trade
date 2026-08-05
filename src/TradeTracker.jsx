@@ -1,6 +1,6 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from "react";
 import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2, SquarePen, Download } from "lucide-react";
-import { AreaChart, Area, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
+import { AreaChart, Area, ComposedChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { APP_VERSION } from "./version";
 
 const COLORS = {
@@ -408,6 +408,7 @@ export default function TradeTracker() {
   const [editingNoteKey, setEditingNoteKey] = useState(null);
   const [editingTrade, setEditingTrade] = useState(null);
   const [chartAccount, setChartAccount] = useState('all');
+  const [chartView, setChartView] = useState('line'); // 'line' | 'candles'
   const [selectedDay, setSelectedDay] = useState(null);
   const [loaded, setLoaded] = useState(false);
   const [year, setYear] = useState(new Date().getFullYear());
@@ -1193,6 +1194,35 @@ export default function TradeTracker() {
     return { yMin: min, yMax: max, zeroOffset: Math.min(1, Math.max(0, offset)) };
   }, [equityCurve]);
 
+  // One "candle" per day: walks that day's trades in order, running a
+  // cumulative total starting at 0 (the "open"). High/low are the extremes
+  // that running total touches during the day, close is where it ends up —
+  // so a day of morning losses that recovers to green gets a long lower
+  // wick with a body near the top, same shape as a bullish hammer.
+  const candleEquity = useMemo(() => {
+    const filtered = chartAccount === 'all' ? realized : realized.filter((r) => r.account === chartAccount);
+    const byDay = {};
+    for (const r of filtered) (byDay[r.closeDate] || (byDay[r.closeDate] = [])).push(r.pnl);
+    const days = Object.keys(byDay).sort();
+    const round = (n) => Math.round(n * 100) / 100;
+    return days.map((date) => {
+      let cum = 0, high = 0, low = 0;
+      for (const pnl of byDay[date]) {
+        cum += pnl;
+        if (cum > high) high = cum;
+        if (cum < low) low = cum;
+      }
+      const close = round(cum);
+      return { date: date.slice(5), open: 0, close, high: round(high), low: round(low), range: [round(low), round(high)] };
+    });
+  }, [realized, chartAccount]);
+
+  const { candleYMin, candleYMax } = useMemo(() => {
+    const highs = candleEquity.map((d) => d.high);
+    const lows = candleEquity.map((d) => d.low);
+    return { candleYMin: Math.min(0, ...lows), candleYMax: Math.max(0, ...highs) };
+  }, [candleEquity]);
+
   const monthlyBreakdown = useMemo(() => {
     const map = {};
     for (const r of realized) {
@@ -1642,44 +1672,65 @@ export default function TradeTracker() {
 
           <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '18px 18px 6px', marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
-              <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>Cumulative P&L</div>
-              {activeAccount === 'robinhood' && subAccounts.length > 1 && (
-                <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2, flexWrap: 'wrap' }}>
-                  <button onClick={() => setChartAccount('all')}
-                    style={{ background: chartAccount === 'all' ? COLORS.text : 'none', color: chartAccount === 'all' ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                    Combined
-                  </button>
-                  {subAccounts.map((acct) => (
-                    <button key={acct} onClick={() => setChartAccount(acct)}
-                      style={{ background: chartAccount === acct ? COLORS.text : 'none', color: chartAccount === acct ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                      {acct}
+              <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>{chartView === 'candles' ? 'Daily P&L' : 'Cumulative P&L'}</div>
+              <div style={{ display: 'flex', alignItems: 'center', gap: 8, flexWrap: 'wrap' }}>
+                <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2 }}>
+                  {['line', 'candles'].map((v) => (
+                    <button key={v} onClick={() => setChartView(v)}
+                      style={{ background: chartView === v ? COLORS.text : 'none', color: chartView === v ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer', textTransform: 'capitalize' }}>
+                      {v}
                     </button>
                   ))}
                 </div>
-              )}
+                {activeAccount === 'robinhood' && subAccounts.length > 1 && (
+                  <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2, flexWrap: 'wrap' }}>
+                    <button onClick={() => setChartAccount('all')}
+                      style={{ background: chartAccount === 'all' ? COLORS.text : 'none', color: chartAccount === 'all' ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                      Combined
+                    </button>
+                    {subAccounts.map((acct) => (
+                      <button key={acct} onClick={() => setChartAccount(acct)}
+                        style={{ background: chartAccount === acct ? COLORS.text : 'none', color: chartAccount === acct ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
+                        {acct}
+                      </button>
+                    ))}
+                  </div>
+                )}
+              </div>
             </div>
             <ResponsiveContainer width="100%" height={160}>
-              <AreaChart data={equityCurve} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
-                <defs>
-                  <linearGradient id="lineSplit" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset={zeroOffset} stopColor={COLORS.green} stopOpacity={1} />
-                    <stop offset={zeroOffset} stopColor={COLORS.red} stopOpacity={1} />
-                  </linearGradient>
-                  <linearGradient id="fillSplit" x1="0" y1="0" x2="0" y2="1">
-                    <stop offset="0" stopColor={COLORS.green} stopOpacity={0.35} />
-                    <stop offset={zeroOffset} stopColor={COLORS.green} stopOpacity={0.04} />
-                    <stop offset={zeroOffset} stopColor={COLORS.red} stopOpacity={0.04} />
-                    <stop offset="1" stopColor={COLORS.red} stopOpacity={0.35} />
-                  </linearGradient>
-                </defs>
-                <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
-                <XAxis dataKey="date" tick={{ fill: COLORS.dim, fontSize: 10, fontFamily: MONO }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
-                <YAxis domain={[yMin, yMax]} tick={{ fill: COLORS.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} width={56} />
-                <ReferenceLine y={0} stroke={COLORS.border} strokeDasharray="2 2" />
-                <Tooltip contentStyle={{ background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12, fontFamily: MONO }}
-                  labelStyle={{ color: COLORS.muted }} formatter={(v) => [fmt(v), 'P&L']} />
-                <Area type="monotone" dataKey="value" stroke="url(#lineSplit)" fill="url(#fillSplit)" strokeWidth={1.75} />
-              </AreaChart>
+              {chartView === 'candles' ? (
+                <ComposedChart data={candleEquity} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
+                  <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fill: COLORS.dim, fontSize: 10, fontFamily: MONO }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
+                  <YAxis domain={[candleYMin, candleYMax]} tick={{ fill: COLORS.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} width={56} />
+                  <ReferenceLine y={0} stroke={COLORS.border} strokeDasharray="2 2" />
+                  <Tooltip content={<CandleTooltip />} />
+                  <Bar dataKey="range" shape={<CandleShape />} isAnimationActive={false} />
+                </ComposedChart>
+              ) : (
+                <AreaChart data={equityCurve} margin={{ top: 4, right: 8, bottom: 0, left: -16 }}>
+                  <defs>
+                    <linearGradient id="lineSplit" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset={zeroOffset} stopColor={COLORS.green} stopOpacity={1} />
+                      <stop offset={zeroOffset} stopColor={COLORS.red} stopOpacity={1} />
+                    </linearGradient>
+                    <linearGradient id="fillSplit" x1="0" y1="0" x2="0" y2="1">
+                      <stop offset="0" stopColor={COLORS.green} stopOpacity={0.35} />
+                      <stop offset={zeroOffset} stopColor={COLORS.green} stopOpacity={0.04} />
+                      <stop offset={zeroOffset} stopColor={COLORS.red} stopOpacity={0.04} />
+                      <stop offset="1" stopColor={COLORS.red} stopOpacity={0.35} />
+                    </linearGradient>
+                  </defs>
+                  <CartesianGrid stroke={COLORS.border} strokeDasharray="3 3" vertical={false} />
+                  <XAxis dataKey="date" tick={{ fill: COLORS.dim, fontSize: 10, fontFamily: MONO }} axisLine={{ stroke: COLORS.border }} tickLine={false} />
+                  <YAxis domain={[yMin, yMax]} tick={{ fill: COLORS.dim, fontSize: 10, fontFamily: MONO }} axisLine={false} tickLine={false} width={56} />
+                  <ReferenceLine y={0} stroke={COLORS.border} strokeDasharray="2 2" />
+                  <Tooltip contentStyle={{ background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 6, fontSize: 12, fontFamily: MONO }}
+                    labelStyle={{ color: COLORS.muted }} formatter={(v) => [fmt(v), 'P&L']} />
+                  <Area type="monotone" dataKey="value" stroke="url(#lineSplit)" fill="url(#fillSplit)" strokeWidth={1.75} />
+                </AreaChart>
+              )}
             </ResponsiveContainer>
           </div>
 
@@ -2340,6 +2391,45 @@ function StatCard({ label, value, sub, color, onClick, square }) {
       <div style={{ fontSize: 9.5, color: COLORS.dim, textTransform: 'uppercase', letterSpacing: 0.5, marginBottom: 5 }}>{label}</div>
       <div style={{ fontSize: 16.5, fontWeight: 700, fontFamily: MONO, color }}>{value}</div>
       {sub && <div style={{ fontSize: 9.5, color: COLORS.dim, marginTop: 2, fontFamily: MONO }}>{sub}</div>}
+    </div>
+  );
+}
+
+// Renders one candle for the daily-P&L candlestick chart. Recharts gives a
+// Bar with an array-valued dataKey (here `range: [low, high]`) a rect that
+// already spans exactly from low to high in pixel space (y = pixel for
+// `high`, y+height = pixel for `low`) — the body (open/close) is then just
+// a linear interpolation into that same span.
+function CandleShape(props) {
+  const { x, y, width, height, payload } = props;
+  const { open, close, high, low } = payload;
+  const up = close >= open;
+  const color = up ? COLORS.green : COLORS.red;
+  if (high === low) {
+    const cy = y + height / 2;
+    return <line x1={x} x2={x + width} y1={cy} y2={cy} stroke={color} strokeWidth={1.5} />;
+  }
+  const toY = (v) => y + height * (high - v) / (high - low);
+  const bodyTop = toY(Math.max(open, close));
+  const bodyBottom = toY(Math.min(open, close));
+  const cx = x + width / 2;
+  const bodyWidth = Math.max(4, width * 0.55);
+  return (
+    <g>
+      <line x1={cx} x2={cx} y1={y} y2={y + height} stroke={color} strokeWidth={1.5} />
+      <rect x={cx - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={Math.max(2, bodyBottom - bodyTop)} fill={color} rx={1} />
+    </g>
+  );
+}
+
+function CandleTooltip({ active, payload, label }) {
+  if (!active || !payload || !payload.length) return null;
+  const d = payload[0].payload;
+  return (
+    <div style={{ background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '7px 10px', fontSize: 11.5, fontFamily: MONO, color: COLORS.text }}>
+      <div style={{ color: COLORS.muted, marginBottom: 3 }}>{label}</div>
+      <div>Close <span style={{ color: d.close >= 0 ? COLORS.green : COLORS.red, fontWeight: 700 }}>{fmt(d.close)}</span></div>
+      <div style={{ color: COLORS.dim }}>High {fmt(d.high)} · Low {fmt(d.low)}</div>
     </div>
   );
 }
