@@ -295,6 +295,7 @@ function parseSchwabTSV(text) {
   };
 
   const result = [];
+  const open = [];
   for (let i = headerIdx + 1; i < lines.length; i++) {
     const row = lines[i];
     if (!row || row.length < 3) continue;
@@ -311,7 +312,17 @@ function parseSchwabTSV(text) {
     const pnl         = parseNum(pnlIdx >= 0 ? row[pnlIdx] : '0');
     const noteVal     = notesIdx >= 0 ? (row[notesIdx] || '') : '';
 
-    if (!ticker || qty <= 0 || !openDate || !closeDate) continue;
+    if (!ticker || qty <= 0 || !openDate) continue;
+
+    if (!closeDate) {
+      // No exit yet — still an open position, not a realized round-trip.
+      if (buyPrice <= 0) continue;
+      open.push({
+        symbol: ticker, tradeType, expiration, qty, buyPrice, openDate,
+        account: 'Schwab', desc: '',
+      });
+      continue;
+    }
 
     result.push({
       symbol: ticker, tradeType, expiration,
@@ -321,10 +332,10 @@ function parseSchwabTSV(text) {
     });
   }
 
-  if (!result.length)
-    throw new Error('No valid trades found — check that Ticker, Entry/Exit Date, Contracts, Entry/Exit Price, and Total $ Gain/Loss columns are present');
+  if (!result.length && !open.length)
+    throw new Error('No valid trades found — check that Ticker, Entry Date, Contracts, and Entry Price columns are present (Exit Date/Price/Total $ only needed for closed trades)');
 
-  return result;
+  return { realized: result, open };
 }
 
 export default function TradeTracker() {
@@ -336,6 +347,7 @@ export default function TradeTracker() {
 
   // ── Schwab state ─────────────────────────────────────────────────────────────
   const [schwabRealized, setSchwabRealized] = useState([]);
+  const [schwabOpen, setSchwabOpen] = useState([]);
   const [schwabNotes, setSchwabNotes] = useState('');
   const [schwabTradeNotes, setSchwabTradeNotes] = useState({});
   const [schwabImportText, setSchwabImportText] = useState('');
@@ -350,6 +362,7 @@ export default function TradeTracker() {
   const [manualSchwabOpenDate, setManualSchwabOpenDate] = useState('');
   const [manualSchwabCloseDate, setManualSchwabCloseDate] = useState('');
   const [manualSchwabPnl, setManualSchwabPnl] = useState('');
+  const [manualSchwabStillOpen, setManualSchwabStillOpen] = useState(false);
 
   // ── Shared UI state ──────────────────────────────────────────────────────────
   const [activeAccount, setActiveAccount] = useState('robinhood');
@@ -403,6 +416,7 @@ export default function TradeTracker() {
         if (raw) {
           const parsed = JSON.parse(raw);
           setSchwabRealized(parsed.realized || []);
+          setSchwabOpen(parsed.open || []);
           setSchwabNotes(parsed.notes || '');
           setSchwabTradeNotes(parsed.tradeNotes || {});
         }
@@ -562,6 +576,34 @@ export default function TradeTracker() {
     setImportNote('Trade added.');
   }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabOpenDate, manualSchwabCloseDate, manualSchwabPnl, manualSchwabAutoPnl, schwabRealized, schwabNotes, schwabTradeNotes]);
 
+  // Adds a hand-entered Schwab position that hasn't been closed yet — no
+  // sell price/close date/P&L, since none of that exists until it's exited.
+  const addManualSchwabOpenPosition = useCallback(() => {
+    setError(null);
+    const symbol = manualSchwabSymbol.trim().toUpperCase();
+    const qty = parseFloat(manualSchwabQty);
+    const buyPrice = parseFloat(manualSchwabBuyPrice);
+    if (!symbol || !manualSchwabOpenDate || !(qty > 0) || !(buyPrice > 0)) {
+      setError('Fill in symbol, open date, a positive quantity, and a positive buy price.');
+      return;
+    }
+    const tradeType = manualSchwabType.trim() || 'shares';
+    const newPos = {
+      symbol, tradeType, expiration: manualSchwabExpiration.trim(),
+      qty, buyPrice, openDate: manualSchwabOpenDate,
+      account: manualSchwabAccount.trim() || 'Individual', desc: '',
+    };
+    const merged = [...schwabOpen, newPos].sort((a, b) => (a.openDate < b.openDate ? -1 : 1));
+    setSchwabOpen(merged);
+    const d = new Date(newPos.openDate + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: schwabRealized, open: merged, notes: schwabNotes, tradeNotes: schwabTradeNotes })); } catch (_) {}
+    setShowManualTrade(false);
+    setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty(''); setManualSchwabBuyPrice('');
+    setImportNote('Open position added.');
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, schwabOpen, schwabRealized, schwabNotes, schwabTradeNotes]);
+
   const clearData = useCallback(() => {
     if (!window.confirm('Clear all Robinhood trade data and notes? This cannot be undone.')) return;
     try { localStorage.removeItem('trades-data'); } catch (_) {}
@@ -718,12 +760,17 @@ export default function TradeTracker() {
   const importSchwabTrades = useCallback((rawText) => {
     setError(null);
     try {
-      const incoming = parseSchwabTSV(rawText);
+      const { realized: incoming, open: incomingOpen } = parseSchwabTSV(rawText);
 
       const keyOf = (t) => `${t.symbol}|${t.tradeType}|${t.openDate}|${t.closeDate}|${t.qty}|${t.buyPrice}`;
       const existingKeys = new Set(schwabRealized.map(keyOf));
       const newTrades = incoming.filter(t => !existingKeys.has(keyOf(t)));
       const merged = [...schwabRealized, ...newTrades].sort((a, b) => a.closeDate < b.closeDate ? -1 : 1);
+
+      const openKeyOf = (t) => `${t.symbol}|${t.tradeType}|${t.openDate}|${t.qty}|${t.buyPrice}`;
+      const existingOpenKeys = new Set(schwabOpen.map(openKeyOf));
+      const newOpen = incomingOpen.filter(t => !existingOpenKeys.has(openKeyOf(t)));
+      const mergedOpen = [...schwabOpen, ...newOpen].sort((a, b) => a.openDate < b.openDate ? -1 : 1);
 
       const updatedNotes = { ...schwabTradeNotes };
       for (const t of newTrades) {
@@ -734,6 +781,7 @@ export default function TradeTracker() {
       }
 
       setSchwabRealized(merged);
+      setSchwabOpen(mergedOpen);
       setSchwabTradeNotes(updatedNotes);
 
       if (merged.length) {
@@ -742,20 +790,37 @@ export default function TradeTracker() {
         setYear(d.getFullYear()); setMonth(d.getMonth());
       }
 
-      try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: merged, notes: schwabNotes, tradeNotes: updatedNotes })); } catch (_) {}
+      try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: merged, open: mergedOpen, notes: schwabNotes, tradeNotes: updatedNotes })); } catch (_) {}
       setShowSchwabImport(false);
       setSchwabImportText('');
-      setImportNote(`Added ${newTrades.length} new trade${newTrades.length === 1 ? '' : 's'}${incoming.length - newTrades.length > 0 ? ` (${incoming.length - newTrades.length} already imported)` : ''}.`);
+      const addedTotal = newTrades.length + newOpen.length;
+      const skippedTotal = (incoming.length - newTrades.length) + (incomingOpen.length - newOpen.length);
+      setImportNote(`Added ${addedTotal} new trade${addedTotal === 1 ? '' : 's'}${newOpen.length ? ` (${newOpen.length} still open)` : ''}${skippedTotal > 0 ? ` (${skippedTotal} already imported)` : ''}.`);
     } catch (e) {
       setError(e.message || 'Could not parse that data');
     }
-  }, [schwabRealized, schwabTradeNotes, schwabNotes]);
+  }, [schwabRealized, schwabOpen, schwabTradeNotes, schwabNotes]);
 
   const clearSchwabData = useCallback(() => {
     if (!window.confirm('Clear all Schwab trade data? This cannot be undone.')) return;
     try { localStorage.removeItem('trades-data-schwab'); } catch (_) {}
-    setSchwabRealized([]); setSchwabNotes(''); setSchwabTradeNotes({});
+    setSchwabRealized([]); setSchwabOpen([]); setSchwabNotes(''); setSchwabTradeNotes({});
     setSelectedDay(null); setError(null); setImportNote(null);
+  }, []);
+
+  // Deletes a hand-entered or imported open Schwab position (no underlying
+  // legs to trim, unlike Robinhood — Schwab open rows are stored directly).
+  const deleteSchwabOpenPosition = useCallback((position) => {
+    if (!window.confirm('Delete this open position?')) return;
+    setSchwabOpen((prev) => {
+      const updated = prev.filter((p) => p !== position);
+      try {
+        const raw = localStorage.getItem('trades-data-schwab');
+        const parsed = raw ? JSON.parse(raw) : {};
+        localStorage.setItem('trades-data-schwab', JSON.stringify({ ...parsed, open: updated }));
+      } catch (_) {}
+      return updated;
+    });
   }, []);
 
   const switchAccount = useCallback((acct) => {
@@ -779,6 +844,14 @@ export default function TradeTracker() {
 
   // ── Derived data ──────────────────────────────────────────────────────────────
   const { realized: rhRealized, openPositions } = useMemo(() => computeRealized(trades), [trades]);
+
+  // Normalized open-positions list for the Open Positions modal — Robinhood's
+  // rows already have this shape; Schwab's open rows carry buyPrice instead
+  // of avgPrice and have no long/short concept, so map them onto the same
+  // fields (keeping a back-reference for delete).
+  const displayOpenPositions = activeAccount === 'robinhood'
+    ? openPositions
+    : schwabOpen.map((p) => ({ ...p, avgPrice: p.buyPrice, isShort: false, _raw: p }));
 
   // Open (non-short) lots for whatever symbol/account is currently typed into
   // the manual-trade form, so a sell can be pinned to a specific one.
@@ -925,7 +998,7 @@ export default function TradeTracker() {
   const monthEntry = monthlyBreakdown.find(([key]) => key === monthKey);
   const monthPnl = monthEntry ? monthEntry[1].day + monthEntry[1].swing : null;
   const selectedTrades = selectedDay ? (dayPnl[selectedDay]?.trades || []) : realized.slice().reverse().slice(0, 20);
-  const hasData = activeAccount === 'robinhood' ? trades.length > 0 : schwabRealized.length > 0;
+  const hasData = activeAccount === 'robinhood' ? trades.length > 0 : (schwabRealized.length > 0 || schwabOpen.length > 0);
 
   const exportCsv = useCallback(() => {
     const header = ['Symbol', 'Type', 'Side', 'Qty', 'Buy Price', 'Sell Price', 'Open Date', 'Close Date', 'P&L', 'Account'];
@@ -1085,7 +1158,15 @@ export default function TradeTracker() {
       {/* ── Schwab manual trade entry panel ── */}
       {activeAccount === 'schwab' && showManualTrade && (
         <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
-          <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 10 }}>Add a closed trade by hand</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>
+              {manualSchwabStillOpen ? 'Add an open position by hand' : 'Add a closed trade by hand'}
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COLORS.muted, cursor: 'pointer' }}>
+              <input type="checkbox" checked={manualSchwabStillOpen} onChange={(e) => setManualSchwabStillOpen(e.target.checked)} />
+              Still open (no exit yet)
+            </label>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 10 }}>
             <div>
               <label style={labelStyle}>Symbol</label>
@@ -1111,27 +1192,33 @@ export default function TradeTracker() {
               <label style={labelStyle}>Buy price</label>
               <input type="number" step="0.01" value={manualSchwabBuyPrice} onChange={(e) => setManualSchwabBuyPrice(e.target.value)} placeholder="195.20" style={inputStyle} />
             </div>
-            <div>
-              <label style={labelStyle}>Sell price</label>
-              <input type="number" step="0.01" value={manualSchwabSellPrice} onChange={(e) => setManualSchwabSellPrice(e.target.value)} placeholder="201.50" style={inputStyle} />
-            </div>
+            {!manualSchwabStillOpen && (
+              <div>
+                <label style={labelStyle}>Sell price</label>
+                <input type="number" step="0.01" value={manualSchwabSellPrice} onChange={(e) => setManualSchwabSellPrice(e.target.value)} placeholder="201.50" style={inputStyle} />
+              </div>
+            )}
             <div>
               <label style={labelStyle}>Open date</label>
               <input type="date" value={manualSchwabOpenDate} onChange={(e) => setManualSchwabOpenDate(e.target.value)} style={inputStyle} />
             </div>
-            <div>
-              <label style={labelStyle}>Close date</label>
-              <input type="date" value={manualSchwabCloseDate} onChange={(e) => setManualSchwabCloseDate(e.target.value)} style={inputStyle} />
-            </div>
-            <div>
-              <label style={labelStyle}>P&L</label>
-              <input type="number" step="0.01" value={manualSchwabPnl} onChange={(e) => setManualSchwabPnl(e.target.value)}
-                placeholder={manualSchwabAutoPnl != null ? manualSchwabAutoPnl.toFixed(2) : '0.00'} style={inputStyle} />
-            </div>
+            {!manualSchwabStillOpen && (
+              <>
+                <div>
+                  <label style={labelStyle}>Close date</label>
+                  <input type="date" value={manualSchwabCloseDate} onChange={(e) => setManualSchwabCloseDate(e.target.value)} style={inputStyle} />
+                </div>
+                <div>
+                  <label style={labelStyle}>P&L</label>
+                  <input type="number" step="0.01" value={manualSchwabPnl} onChange={(e) => setManualSchwabPnl(e.target.value)}
+                    placeholder={manualSchwabAutoPnl != null ? manualSchwabAutoPnl.toFixed(2) : '0.00'} style={inputStyle} />
+                </div>
+              </>
+            )}
           </div>
-          <button onClick={addManualSchwabTrade}
+          <button onClick={manualSchwabStillOpen ? addManualSchwabOpenPosition : addManualSchwabTrade}
             style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
-            Add trade
+            {manualSchwabStillOpen ? 'Add position' : 'Add trade'}
           </button>
         </div>
       )}
@@ -1219,9 +1306,7 @@ export default function TradeTracker() {
             <StatCard label="Win Rate" value={`${stats.winRate}%`} color={COLORS.text} square />
             <StatCard label="Best Day" value={stats.best ? fmt(stats.best.pnl) : '—'} sub={stats.best?.date} color={COLORS.green} />
             <StatCard label="Worst Day" value={stats.worst ? fmt(stats.worst.pnl) : '—'} sub={stats.worst?.date} color={COLORS.red} />
-            {activeAccount === 'robinhood' && (
-              <StatCard label="Open Positions" value={openPositions.length} color={COLORS.amber} onClick={() => setShowPositions(true)} />
-            )}
+            <StatCard label="Open Positions" value={activeAccount === 'robinhood' ? openPositions.length : schwabOpen.length} color={COLORS.amber} onClick={() => setShowPositions(true)} />
             <StatCard
               label="Avg Win"
               value={avgStats.shWin != null ? fmt(avgStats.shWin) : avgStats.optWin != null ? fmt(avgStats.optWin) : '—'}
@@ -1461,8 +1546,8 @@ export default function TradeTracker() {
         @media (max-width: 680px) { .tt-grid { grid-template-columns: 1fr; } }
       `}</style>
 
-      {/* Open positions modal — Robinhood only */}
-      {showPositions && activeAccount === 'robinhood' && (
+      {/* Open positions modal — Robinhood (raw open/short lots) and Schwab (hand-entered/imported open rows) */}
+      {showPositions && (
         <div onClick={() => setShowPositions(false)}
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100 }}>
           <div onClick={(e) => e.stopPropagation()}
@@ -1472,14 +1557,14 @@ export default function TradeTracker() {
               <button onClick={() => setShowPositions(false)}
                 style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}>×</button>
             </div>
-            {openPositions.length === 0 ? (
+            {displayOpenPositions.length === 0 ? (
               <div style={{ fontSize: 13, color: COLORS.dim }}>No open positions - everything's closed out.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 18 }}>
                   {[
-                    { label: 'Shares', items: openPositions.filter((p) => !parseOptionSymbol(p.symbol)) },
-                    { label: 'Options', items: openPositions.filter((p) => parseOptionSymbol(p.symbol)) },
+                    { label: 'Shares', items: displayOpenPositions.filter((p) => !isContractTrade(p)) },
+                    { label: 'Options', items: displayOpenPositions.filter((p) => isContractTrade(p)) },
                   ].map(({ label, items }) => (
                     <div key={label}>
                       <div style={{ fontSize: 10, letterSpacing: 0.5, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
@@ -1488,14 +1573,15 @@ export default function TradeTracker() {
                       ) : (
                         <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
                           {items.slice().sort((a, b) => (a.openDate < b.openDate ? -1 : 1)).map((p, i) => {
-                            const opt = parseOptionSymbol(p.symbol);
-                            const mult = opt ? 100 : 1;
+                            const isOpt = isContractTrade(p);
+                            const mult = isOpt ? 100 : 1;
+                            const posLabel = getTradeDisplayLabel(p);
                             const costBasis = p.avgPrice * p.qty * mult;
                             return (
                               <div key={i} style={{ borderBottom: `1px solid ${COLORS.border}`, paddingBottom: 8 }}>
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
                                   <div style={{ fontSize: 11.5, fontWeight: 600, lineHeight: 1.3 }}>
-                                    {opt ? opt.label : p.symbol}
+                                    {posLabel}
                                     {p.isShort && <span style={{ fontSize: 9.5, fontWeight: 500, color: COLORS.amber, marginLeft: 4 }}>SHORT</span>}
                                     {p.isShort && (
                                       <button onClick={() => convertShortToLong(p)} title="Not actually a short — add the missing buy so it FIFO-matches as a normal long"
@@ -1505,7 +1591,7 @@ export default function TradeTracker() {
                                     )}
                                     {p.account && <div style={{ fontWeight: 400, color: COLORS.dim, fontSize: 9.5 }}>{p.account}</div>}
                                   </div>
-                                  <button onClick={() => deletePosition(p)} title="Delete this position"
+                                  <button onClick={() => activeAccount === 'robinhood' ? deletePosition(p) : deleteSchwabOpenPosition(p._raw)} title="Delete this position"
                                     style={{ flexShrink: 0, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.red, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
                                     <Trash2 size={11} />
                                   </button>
@@ -1514,7 +1600,7 @@ export default function TradeTracker() {
                                   ${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
                                 </div>
                                 <div style={{ fontSize: 9.5, color: COLORS.dim, fontFamily: MONO, marginTop: 1 }}>
-                                  {p.qty} {opt ? 'x100' : 'sh'}{p.isShort ? ' short' : ''} · {p.isShort ? 'cr' : 'cost'} {p.avgPrice.toFixed(2)} · {p.openDate}
+                                  {p.qty} {isOpt ? 'x100' : 'sh'}{p.isShort ? ' short' : ''} · {p.isShort ? 'cr' : 'cost'} {p.avgPrice.toFixed(2)} · {p.openDate}
                                 </div>
                               </div>
                             );
@@ -1526,9 +1612,9 @@ export default function TradeTracker() {
                 </div>
                 {(() => {
                   const byAcct = {};
-                  for (const p of openPositions) {
+                  for (const p of displayOpenPositions) {
                     const key = p.account || 'Unknown';
-                    const mult = parseOptionSymbol(p.symbol) ? 100 : 1;
+                    const mult = isContractTrade(p) ? 100 : 1;
                     byAcct[key] = (byAcct[key] || 0) + p.avgPrice * p.qty * mult;
                   }
                   const acctEntries = Object.entries(byAcct).sort((a, b) => a[0].localeCompare(b[0]));
