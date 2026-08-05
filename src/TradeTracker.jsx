@@ -355,7 +355,6 @@ export default function TradeTracker() {
   const [manualSchwabSymbol, setManualSchwabSymbol] = useState('');
   const [manualSchwabType, setManualSchwabType] = useState('shares');
   const [manualSchwabExpiration, setManualSchwabExpiration] = useState('');
-  const [manualSchwabAccount, setManualSchwabAccount] = useState('Schwab');
   const [manualSchwabQty, setManualSchwabQty] = useState('');
   const [manualSchwabBuyPrice, setManualSchwabBuyPrice] = useState('');
   const [manualSchwabSellPrice, setManualSchwabSellPrice] = useState('');
@@ -418,10 +417,15 @@ export default function TradeTracker() {
         const raw = localStorage.getItem('trades-data-schwab');
         if (raw) {
           const parsed = JSON.parse(raw);
-          setSchwabRealized(parsed.realized || []);
-          setSchwabOpen(parsed.open || []);
+          // Schwab is a single account — collapse any stray account labels
+          // (e.g. old manual entries defaulted to "Individual") down to one.
+          const realized = (parsed.realized || []).map((t) => ({ ...t, account: 'Schwab' }));
+          const open = (parsed.open || []).map((t) => ({ ...t, account: 'Schwab' }));
+          setSchwabRealized(realized);
+          setSchwabOpen(open);
           setSchwabNotes(parsed.notes || '');
           setSchwabTradeNotes(parsed.tradeNotes || {});
+          try { localStorage.setItem('trades-data-schwab', JSON.stringify({ ...parsed, realized, open })); } catch (_) {}
         }
       } catch (_) {}
       setLoaded(true);
@@ -610,7 +614,7 @@ export default function TradeTracker() {
       symbol, tradeType, expiration: manualSchwabExpiration.trim(),
       qty, buyPrice, sellPrice, openDate: manualSchwabOpenDate, closeDate: manualSchwabCloseDate, pnl,
       isOption: tradeType.toLowerCase() !== 'shares',
-      account: manualSchwabAccount.trim() || 'Schwab', desc: '',
+      account: 'Schwab', desc: '',
     };
     const merged = [...schwabRealized, newTrade].sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1));
     setSchwabRealized(merged);
@@ -622,7 +626,7 @@ export default function TradeTracker() {
     setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty('');
     setManualSchwabBuyPrice(''); setManualSchwabSellPrice(''); setManualSchwabPnl('');
     setImportNote('Trade added.');
-  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabOpenDate, manualSchwabCloseDate, manualSchwabPnl, manualSchwabAutoPnl, schwabRealized, schwabNotes, schwabTradeNotes]);
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabOpenDate, manualSchwabCloseDate, manualSchwabPnl, manualSchwabAutoPnl, schwabRealized, schwabNotes, schwabTradeNotes]);
 
   // Adds a hand-entered Schwab position that hasn't been closed yet — no
   // sell price/close date/P&L, since none of that exists until it's exited.
@@ -639,7 +643,7 @@ export default function TradeTracker() {
     const newPos = {
       symbol, tradeType, expiration: manualSchwabExpiration.trim(),
       qty, buyPrice, openDate: manualSchwabOpenDate,
-      account: manualSchwabAccount.trim() || 'Schwab', desc: '',
+      account: 'Schwab', desc: '',
     };
     const merged = [...schwabOpen, newPos].sort((a, b) => (a.openDate < b.openDate ? -1 : 1));
     setSchwabOpen(merged);
@@ -650,7 +654,7 @@ export default function TradeTracker() {
     setShowManualTrade(false);
     setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty(''); setManualSchwabBuyPrice('');
     setImportNote('Open position added.');
-  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, schwabOpen, schwabRealized, schwabNotes, schwabTradeNotes]);
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, schwabOpen, schwabRealized, schwabNotes, schwabTradeNotes]);
 
   // Adds one buy closed out across several sell rows (e.g. buy 4 @ 3.30,
   // sell 1 @ 3.50, 1 on 3/7, 1 on 3/9) — one closed round-trip row per sell,
@@ -683,7 +687,7 @@ export default function TradeTracker() {
     }
     const tradeType = manualSchwabType.trim() || 'shares';
     const expiration = manualSchwabExpiration.trim();
-    const account = manualSchwabAccount.trim() || 'Schwab';
+    const account = 'Schwab';
     const mult = tradeType.toLowerCase() !== 'shares' ? 100 : 1;
     const newTrades = sellRows.map((r) => {
       const rQty = parseFloat(r.qty), rPrice = parseFloat(r.price);
@@ -713,7 +717,7 @@ export default function TradeTracker() {
     setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty(''); setManualSchwabBuyPrice('');
     setManualSchwabMode('closed'); setManualSchwabSplitSells([{ qty: '', price: '', date: '' }]);
     setImportNote(`Added ${newTrades.length} trade${newTrades.length === 1 ? '' : 's'}${remainder > 1e-9 ? ' (1 position left open)' : ''}.`);
-  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, manualSchwabSplitSells, schwabRealized, schwabOpen, schwabNotes, schwabTradeNotes]);
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, manualSchwabSplitSells, schwabRealized, schwabOpen, schwabNotes, schwabTradeNotes]);
 
   const clearData = useCallback(() => {
     if (!window.confirm('Clear all Robinhood trade data and notes? This cannot be undone.')) return;
@@ -1378,10 +1382,6 @@ export default function TradeTracker() {
               <input value={manualSchwabExpiration} onChange={(e) => setManualSchwabExpiration(e.target.value)} style={inputStyle} />
             </div>
             <div>
-              <label style={labelStyle}>Account</label>
-              <input value={manualSchwabAccount} onChange={(e) => setManualSchwabAccount(e.target.value)} placeholder="Schwab" style={inputStyle} />
-            </div>
-            <div>
               <label style={labelStyle}>Quantity{manualSchwabMode === 'split' ? ' (bought)' : ''}</label>
               <input type="number" value={manualSchwabQty} onChange={(e) => setManualSchwabQty(e.target.value)} placeholder="10" style={inputStyle} />
             </div>
@@ -1549,7 +1549,7 @@ export default function TradeTracker() {
           <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: '18px 18px 6px', marginBottom: 20 }}>
             <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', flexWrap: 'wrap', gap: 8, marginBottom: 10 }}>
               <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>Cumulative P&L</div>
-              {subAccounts.length > 1 && (
+              {activeAccount === 'robinhood' && subAccounts.length > 1 && (
                 <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2, flexWrap: 'wrap' }}>
                   <button onClick={() => setChartAccount('all')}
                     style={{ background: chartAccount === 'all' ? COLORS.text : 'none', color: chartAccount === 'all' ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
@@ -1908,7 +1908,6 @@ function EditTradeModal({ trade, isRobinhood, onSave, onClose }) {
   const [symbol, setSymbol] = useState(trade.symbol);
   const [tradeType, setTradeType] = useState(trade.tradeType || 'shares');
   const [expiration, setExpiration] = useState(trade.expiration || '');
-  const [account, setAccount] = useState(trade.account || '');
   const [pnl, setPnl] = useState(String(trade.pnl));
   const [error, setError] = useState(null);
 
@@ -1926,7 +1925,7 @@ function EditTradeModal({ trade, isRobinhood, onSave, onClose }) {
         setError('Symbol and P&L are required.');
         return;
       }
-      onSave({ symbol: symbol.trim().toUpperCase(), tradeType, expiration: expiration.trim(), account: account.trim(), buyPrice: bp, sellPrice: sp, qty: q, openDate, closeDate, pnl: p });
+      onSave({ symbol: symbol.trim().toUpperCase(), tradeType, expiration: expiration.trim(), account: 'Schwab', buyPrice: bp, sellPrice: sp, qty: q, openDate, closeDate, pnl: p });
     }
   };
 
@@ -1954,10 +1953,6 @@ function EditTradeModal({ trade, isRobinhood, onSave, onClose }) {
               <div>
                 <label style={labelStyle}>Expiration</label>
                 <input value={expiration} onChange={(e) => setExpiration(e.target.value)} style={inputStyle} />
-              </div>
-              <div>
-                <label style={labelStyle}>Account</label>
-                <input value={account} onChange={(e) => setAccount(e.target.value)} style={inputStyle} />
               </div>
             </div>
           )}
