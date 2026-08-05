@@ -1439,7 +1439,7 @@ export default function TradeTracker() {
         <div onClick={() => setShowPositions(false)}
           style={{ position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.65)', display: 'flex', alignItems: 'center', justifyContent: 'center', padding: 20, zIndex: 100 }}>
           <div onClick={(e) => e.stopPropagation()}
-            style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20, width: '100%', maxWidth: 480, maxHeight: '80vh', overflowY: 'auto', fontFamily: SANS, color: COLORS.text }}>
+            style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 12, padding: 20, width: '100%', maxWidth: 640, maxHeight: '80vh', overflowY: 'auto', fontFamily: SANS, color: COLORS.text }}>
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 16 }}>
               <div style={{ fontSize: 15, fontWeight: 700 }}>Open Positions</div>
               <button onClick={() => setShowPositions(false)}
@@ -1449,34 +1449,48 @@ export default function TradeTracker() {
               <div style={{ fontSize: 13, color: COLORS.dim }}>No open positions - everything's closed out.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
-                {openPositions.slice().sort((a, b) => (a.openDate < b.openDate ? -1 : 1)).map((p, i) => {
-                  const opt = parseOptionSymbol(p.symbol);
-                  const mult = opt ? 100 : 1;
-                  const costBasis = p.avgPrice * p.qty * mult;
-                  return (
-                    <div key={i} style={{ borderBottom: `1px solid ${COLORS.border}`, paddingBottom: 10 }}>
-                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start' }}>
-                        <div style={{ fontSize: 13.5, fontWeight: 600 }}>
-                          {opt ? opt.label : p.symbol}
-                          {p.isShort && <span style={{ fontSize: 11, fontWeight: 500, color: COLORS.amber, marginLeft: 6 }}>SHORT</span>}
-                          {p.account ? <span style={{ fontWeight: 400, color: COLORS.dim }}> ({p.account})</span> : null}
+                <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 18 }}>
+                  {[
+                    { label: 'Shares', items: openPositions.filter((p) => !parseOptionSymbol(p.symbol)) },
+                    { label: 'Options', items: openPositions.filter((p) => parseOptionSymbol(p.symbol)) },
+                  ].map(({ label, items }) => (
+                    <div key={label}>
+                      <div style={{ fontSize: 10, letterSpacing: 0.5, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
+                      {items.length === 0 ? (
+                        <div style={{ fontSize: 11, color: COLORS.dim }}>None</div>
+                      ) : (
+                        <div style={{ display: 'flex', flexDirection: 'column', gap: 9 }}>
+                          {items.slice().sort((a, b) => (a.openDate < b.openDate ? -1 : 1)).map((p, i) => {
+                            const opt = parseOptionSymbol(p.symbol);
+                            const mult = opt ? 100 : 1;
+                            const costBasis = p.avgPrice * p.qty * mult;
+                            return (
+                              <div key={i} style={{ borderBottom: `1px solid ${COLORS.border}`, paddingBottom: 8 }}>
+                                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
+                                  <div style={{ fontSize: 11.5, fontWeight: 600, lineHeight: 1.3 }}>
+                                    {opt ? opt.label : p.symbol}
+                                    {p.isShort && <span style={{ fontSize: 9.5, fontWeight: 500, color: COLORS.amber, marginLeft: 4 }}>SHORT</span>}
+                                    {p.account && <div style={{ fontWeight: 400, color: COLORS.dim, fontSize: 9.5 }}>{p.account}</div>}
+                                  </div>
+                                  <button onClick={() => deletePosition(p)} title="Delete this position"
+                                    style={{ flexShrink: 0, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.red, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
+                                    <Trash2 size={11} />
+                                  </button>
+                                </div>
+                                <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, marginTop: 3 }}>
+                                  ${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
+                                </div>
+                                <div style={{ fontSize: 9.5, color: COLORS.dim, fontFamily: MONO, marginTop: 1 }}>
+                                  {p.qty} {opt ? 'x100' : 'sh'}{p.isShort ? ' short' : ''} · {p.isShort ? 'cr' : 'cost'} {p.avgPrice.toFixed(2)} · {p.openDate}
+                                </div>
+                              </div>
+                            );
+                          })}
                         </div>
-                        <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
-                          <div style={{ fontFamily: MONO, fontSize: 13, fontWeight: 700 }}>
-                            ${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
-                          </div>
-                          <button onClick={() => deletePosition(p)} title="Delete this position"
-                            style={{ flexShrink: 0, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.red, cursor: 'pointer', padding: '5px 7px', display: 'flex', alignItems: 'center' }}>
-                            <Trash2 size={13} />
-                          </button>
-                        </div>
-                      </div>
-                      <div style={{ fontSize: 11, color: COLORS.dim, fontFamily: MONO, marginTop: 2 }}>
-                        {p.qty} {opt ? `contract${p.qty > 1 ? 's' : ''} (×100)` : 'sh'}{p.isShort ? ' short' : ''} · avg {p.isShort ? 'credit' : 'cost'} {p.avgPrice.toFixed(2)} · opened {p.openDate}
-                      </div>
+                      )}
                     </div>
-                  );
-                })}
+                  ))}
+                </div>
                 {(() => {
                   const byAcct = {};
                   for (const p of openPositions) {
