@@ -362,7 +362,8 @@ export default function TradeTracker() {
   const [manualSchwabOpenDate, setManualSchwabOpenDate] = useState('');
   const [manualSchwabCloseDate, setManualSchwabCloseDate] = useState('');
   const [manualSchwabPnl, setManualSchwabPnl] = useState('');
-  const [manualSchwabStillOpen, setManualSchwabStillOpen] = useState(false);
+  const [manualSchwabMode, setManualSchwabMode] = useState('closed'); // 'closed' | 'open' | 'split'
+  const [manualSchwabSplitSells, setManualSchwabSplitSells] = useState([{ qty: '', price: '', date: '' }]);
 
   // ── Shared UI state ──────────────────────────────────────────────────────────
   const [activeAccount, setActiveAccount] = useState('robinhood');
@@ -379,6 +380,8 @@ export default function TradeTracker() {
   const [manualAccount, setManualAccount] = useState('Individual');
   const [manualDesc, setManualDesc] = useState('');
   const [manualTargetLot, setManualTargetLot] = useState('');
+  const [manualSplitMode, setManualSplitMode] = useState(false);
+  const [manualSplitSells, setManualSplitSells] = useState([{ qty: '', price: '', date: '' }]);
   const [showPositions, setShowPositions] = useState(false);
   const [showTickerPnl, setShowTickerPnl] = useState(false);
   const [showBackup, setShowBackup] = useState(false);
@@ -535,6 +538,51 @@ export default function TradeTracker() {
     setImportNote('Trade added.');
   }, [manualSymbol, manualSide, manualQty, manualPrice, manualDate, manualAccount, manualDesc, manualTargetLot, trades, notes, tradeNotes]);
 
+  // Adds one buy plus several sell legs against it in a single submit (e.g.
+  // buy 4 @ 3.30, then sell 1 @ 3.50, 1 on 3/7, 1 on 3/9). The buy is placed
+  // before the sells in trade order so same-day ties FIFO-match correctly;
+  // any unsold remainder is left open, same as adding the legs one at a time.
+  const addManualSplitTrade = useCallback(() => {
+    setError(null);
+    const symbol = manualSymbol.trim().toUpperCase();
+    const qty = parseFloat(manualQty);
+    const price = parseFloat(manualPrice);
+    const account = manualAccount.trim() || 'Individual';
+    if (!symbol || !manualDate || !(qty > 0) || !(price > 0)) {
+      setError('Fill in symbol, date, a positive quantity, and a positive price for the buy.');
+      return;
+    }
+    const sellRows = manualSplitSells.filter((r) => r.qty || r.price || r.date);
+    if (!sellRows.length) {
+      setError('Add at least one sell row.');
+      return;
+    }
+    for (const r of sellRows) {
+      if (!(parseFloat(r.qty) > 0) || !(parseFloat(r.price) > 0) || !r.date) {
+        setError('Each sell row needs a positive quantity, a positive price, and a date.');
+        return;
+      }
+    }
+    const desc = manualDesc.trim();
+    const newTrades = [
+      { date: manualDate, symbol, desc, side: 'buy', qty, price, account },
+      ...sellRows.map((r) => ({ date: r.date, symbol, desc, side: 'sell', qty: parseFloat(r.qty), price: parseFloat(r.price), account })),
+    ];
+    const merged = [...trades, ...newTrades].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    setTrades(merged);
+    const now = new Date().toISOString();
+    setLastSynced(now);
+    const last = merged[merged.length - 1];
+    const d = new Date(last.date + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data', JSON.stringify({ trades: merged, lastSynced: now, notes, tradeNotes })); } catch (_) {}
+    setShowManualTrade(false);
+    setManualSymbol(''); setManualQty(''); setManualPrice(''); setManualDesc('');
+    setManualSplitMode(false); setManualSplitSells([{ qty: '', price: '', date: '' }]);
+    setImportNote(`Added ${newTrades.length} trades.`);
+  }, [manualSymbol, manualQty, manualPrice, manualDate, manualAccount, manualDesc, manualSplitSells, trades, notes, tradeNotes]);
+
   // Suggested P&L for a manual Schwab entry, used to prefill the field —
   // real fills can differ (commissions, multi-leg spreads) so it stays editable.
   const manualSchwabAutoPnl = useMemo(() => {
@@ -603,6 +651,69 @@ export default function TradeTracker() {
     setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty(''); setManualSchwabBuyPrice('');
     setImportNote('Open position added.');
   }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, schwabOpen, schwabRealized, schwabNotes, schwabTradeNotes]);
+
+  // Adds one buy closed out across several sell rows (e.g. buy 4 @ 3.30,
+  // sell 1 @ 3.50, 1 on 3/7, 1 on 3/9) — one closed round-trip row per sell,
+  // all sharing the same buy price/date. Schwab has no shared lot pool like
+  // Robinhood, so any unsold remainder is added to schwabOpen explicitly.
+  const addManualSchwabSplitTrades = useCallback(() => {
+    setError(null);
+    const symbol = manualSchwabSymbol.trim().toUpperCase();
+    const qty = parseFloat(manualSchwabQty);
+    const buyPrice = parseFloat(manualSchwabBuyPrice);
+    if (!symbol || !manualSchwabOpenDate || !(qty > 0) || !(buyPrice > 0)) {
+      setError('Fill in symbol, open date, a positive buy quantity, and a positive buy price.');
+      return;
+    }
+    const sellRows = manualSchwabSplitSells.filter((r) => r.qty || r.price || r.date);
+    if (!sellRows.length) {
+      setError('Add at least one sell row.');
+      return;
+    }
+    for (const r of sellRows) {
+      if (!(parseFloat(r.qty) > 0) || !(parseFloat(r.price) > 0) || !r.date) {
+        setError('Each sell row needs a positive quantity, a positive price, and a close date.');
+        return;
+      }
+    }
+    const soldQty = sellRows.reduce((s, r) => s + parseFloat(r.qty), 0);
+    if (soldQty - qty > 1e-9) {
+      setError(`Sell rows total ${soldQty} shares/contracts, more than the ${qty} bought.`);
+      return;
+    }
+    const tradeType = manualSchwabType.trim() || 'shares';
+    const expiration = manualSchwabExpiration.trim();
+    const account = manualSchwabAccount.trim() || 'Individual';
+    const mult = tradeType.toLowerCase() !== 'shares' ? 100 : 1;
+    const newTrades = sellRows.map((r) => {
+      const rQty = parseFloat(r.qty), rPrice = parseFloat(r.price);
+      return {
+        symbol, tradeType, expiration, qty: rQty, buyPrice, sellPrice: rPrice,
+        openDate: manualSchwabOpenDate, closeDate: r.date, pnl: (rPrice - buyPrice) * rQty * mult,
+        isOption: tradeType.toLowerCase() !== 'shares', account, desc: '',
+      };
+    });
+    const mergedRealized = [...schwabRealized, ...newTrades].sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1));
+    setSchwabRealized(mergedRealized);
+
+    const remainder = qty - soldQty;
+    let mergedOpen = schwabOpen;
+    if (remainder > 1e-9) {
+      const openPos = { symbol, tradeType, expiration, qty: remainder, buyPrice, openDate: manualSchwabOpenDate, account, desc: '' };
+      mergedOpen = [...schwabOpen, openPos].sort((a, b) => (a.openDate < b.openDate ? -1 : 1));
+      setSchwabOpen(mergedOpen);
+    }
+
+    const lastClose = newTrades.reduce((max, t) => (t.closeDate > max ? t.closeDate : max), newTrades[0].closeDate);
+    const d = new Date(lastClose + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: mergedRealized, open: mergedOpen, notes: schwabNotes, tradeNotes: schwabTradeNotes })); } catch (_) {}
+    setShowManualTrade(false);
+    setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty(''); setManualSchwabBuyPrice('');
+    setManualSchwabMode('closed'); setManualSchwabSplitSells([{ qty: '', price: '', date: '' }]);
+    setImportNote(`Added ${newTrades.length} trade${newTrades.length === 1 ? '' : 's'}${remainder > 1e-9 ? ' (1 position left open)' : ''}.`);
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabAccount, manualSchwabQty, manualSchwabBuyPrice, manualSchwabOpenDate, manualSchwabSplitSells, schwabRealized, schwabOpen, schwabNotes, schwabTradeNotes]);
 
   const clearData = useCallback(() => {
     if (!window.confirm('Clear all Robinhood trade data and notes? This cannot be undone.')) return;
@@ -1097,7 +1208,16 @@ export default function TradeTracker() {
       {/* ── Manual trade entry panel ── */}
       {activeAccount === 'robinhood' && showManualTrade && (
         <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
-          <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 10 }}>Add a trade by hand</div>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+            <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>
+              {manualSplitMode ? 'Add a buy, then sell it in pieces' : 'Add a trade by hand'}
+            </div>
+            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COLORS.muted, cursor: 'pointer' }}>
+              <input type="checkbox" checked={manualSplitMode}
+                onChange={(e) => { setManualSplitMode(e.target.checked); if (e.target.checked) { setManualSide('buy'); setManualTargetLot(''); } }} />
+              Split into multiple sells
+            </label>
+          </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 10 }}>
             <div>
               <label style={labelStyle}>Symbol</label>
@@ -1106,21 +1226,22 @@ export default function TradeTracker() {
             </div>
             <div>
               <label style={labelStyle}>Side</label>
-              <select value={manualSide} onChange={(e) => { setManualSide(e.target.value); setManualTargetLot(''); }} style={inputStyle}>
+              <select value={manualSide} disabled={manualSplitMode}
+                onChange={(e) => { setManualSide(e.target.value); setManualTargetLot(''); }} style={inputStyle}>
                 <option value="buy">Buy</option>
                 <option value="sell">Sell</option>
               </select>
             </div>
             <div>
-              <label style={labelStyle}>Quantity</label>
+              <label style={labelStyle}>Quantity{manualSplitMode ? ' (bought)' : ''}</label>
               <input type="number" value={manualQty} onChange={(e) => setManualQty(e.target.value)} placeholder="10" style={inputStyle} />
             </div>
             <div>
-              <label style={labelStyle}>Price</label>
+              <label style={labelStyle}>Price{manualSplitMode ? ' (buy)' : ''}</label>
               <input type="number" step="0.01" value={manualPrice} onChange={(e) => setManualPrice(e.target.value)} placeholder="195.20" style={inputStyle} />
             </div>
             <div>
-              <label style={labelStyle}>Date</label>
+              <label style={labelStyle}>Date{manualSplitMode ? ' (buy)' : ''}</label>
               <input type="date" value={manualDate} onChange={(e) => setManualDate(e.target.value)} style={inputStyle} />
             </div>
             <div>
@@ -1132,7 +1253,31 @@ export default function TradeTracker() {
             <label style={labelStyle}>Note (optional)</label>
             <input value={manualDesc} onChange={(e) => setManualDesc(e.target.value)} placeholder="" style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }} />
           </div>
-          {manualSide === 'sell' && manualLotOptions.length > 0 && (
+          {manualSplitMode ? (
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>Sells</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {manualSplitSells.map((row, i) => (
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 6, alignItems: 'end' }}>
+                    <input type="number" value={row.qty} placeholder="Qty" style={inputStyle}
+                      onChange={(e) => setManualSplitSells((rows) => rows.map((r, j) => j === i ? { ...r, qty: e.target.value } : r))} />
+                    <input type="number" step="0.01" value={row.price} placeholder="Price" style={inputStyle}
+                      onChange={(e) => setManualSplitSells((rows) => rows.map((r, j) => j === i ? { ...r, price: e.target.value } : r))} />
+                    <input type="date" value={row.date} style={inputStyle}
+                      onChange={(e) => setManualSplitSells((rows) => rows.map((r, j) => j === i ? { ...r, date: e.target.value } : r))} />
+                    <button onClick={() => setManualSplitSells((rows) => rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}
+                      title="Remove this sell" style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.dim, cursor: 'pointer', padding: '6px 8px', display: 'flex', alignItems: 'center' }}>
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => setManualSplitSells((rows) => [...rows, { qty: '', price: '', date: '' }])}
+                style={{ marginTop: 8, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.text, cursor: 'pointer', padding: '5px 10px', fontSize: 12, fontWeight: 600 }}>
+                + Add another sell
+              </button>
+            </div>
+          ) : manualSide === 'sell' && manualLotOptions.length > 0 && (
             <div style={{ marginBottom: 10 }}>
               <label style={labelStyle}>Which lot is this selling?</label>
               <select value={manualTargetLot} onChange={(e) => setManualTargetLot(e.target.value)} style={{ ...inputStyle, width: '100%', boxSizing: 'border-box' }}>
@@ -1148,9 +1293,9 @@ export default function TradeTracker() {
               </div>
             </div>
           )}
-          <button onClick={addManualTrade}
+          <button onClick={manualSplitMode ? addManualSplitTrade : addManualTrade}
             style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
-            Add trade
+            {manualSplitMode ? 'Add buy + sells' : 'Add trade'}
           </button>
         </div>
       )}
@@ -1158,14 +1303,16 @@ export default function TradeTracker() {
       {/* ── Schwab manual trade entry panel ── */}
       {activeAccount === 'schwab' && showManualTrade && (
         <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 16, marginBottom: 20 }}>
-          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10 }}>
+          <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 10, flexWrap: 'wrap', gap: 8 }}>
             <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>
-              {manualSchwabStillOpen ? 'Add an open position by hand' : 'Add a closed trade by hand'}
+              {manualSchwabMode === 'open' ? 'Add an open position by hand' : manualSchwabMode === 'split' ? 'Add a buy, then sell it in pieces' : 'Add a closed trade by hand'}
             </div>
-            <label style={{ display: 'flex', alignItems: 'center', gap: 6, fontSize: 12, color: COLORS.muted, cursor: 'pointer' }}>
-              <input type="checkbox" checked={manualSchwabStillOpen} onChange={(e) => setManualSchwabStillOpen(e.target.checked)} />
-              Still open (no exit yet)
-            </label>
+            <select value={manualSchwabMode} onChange={(e) => setManualSchwabMode(e.target.value)}
+              style={{ ...inputStyle, width: 'auto' }}>
+              <option value="closed">Closed trade</option>
+              <option value="open">Still open (no exit yet)</option>
+              <option value="split">Split into multiple sells</option>
+            </select>
           </div>
           <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(120px, 1fr))', gap: 10, marginBottom: 10 }}>
             <div>
@@ -1185,14 +1332,14 @@ export default function TradeTracker() {
               <input value={manualSchwabAccount} onChange={(e) => setManualSchwabAccount(e.target.value)} placeholder="Individual" style={inputStyle} />
             </div>
             <div>
-              <label style={labelStyle}>Quantity</label>
+              <label style={labelStyle}>Quantity{manualSchwabMode === 'split' ? ' (bought)' : ''}</label>
               <input type="number" value={manualSchwabQty} onChange={(e) => setManualSchwabQty(e.target.value)} placeholder="10" style={inputStyle} />
             </div>
             <div>
               <label style={labelStyle}>Buy price</label>
               <input type="number" step="0.01" value={manualSchwabBuyPrice} onChange={(e) => setManualSchwabBuyPrice(e.target.value)} placeholder="195.20" style={inputStyle} />
             </div>
-            {!manualSchwabStillOpen && (
+            {manualSchwabMode === 'closed' && (
               <div>
                 <label style={labelStyle}>Sell price</label>
                 <input type="number" step="0.01" value={manualSchwabSellPrice} onChange={(e) => setManualSchwabSellPrice(e.target.value)} placeholder="201.50" style={inputStyle} />
@@ -1202,7 +1349,7 @@ export default function TradeTracker() {
               <label style={labelStyle}>Open date</label>
               <input type="date" value={manualSchwabOpenDate} onChange={(e) => setManualSchwabOpenDate(e.target.value)} style={inputStyle} />
             </div>
-            {!manualSchwabStillOpen && (
+            {manualSchwabMode === 'closed' && (
               <>
                 <div>
                   <label style={labelStyle}>Close date</label>
@@ -1216,9 +1363,37 @@ export default function TradeTracker() {
               </>
             )}
           </div>
-          <button onClick={manualSchwabStillOpen ? addManualSchwabOpenPosition : addManualSchwabTrade}
+          {manualSchwabMode === 'split' && (
+            <div style={{ marginBottom: 10 }}>
+              <label style={labelStyle}>Sells</label>
+              <div style={{ display: 'flex', flexDirection: 'column', gap: 6 }}>
+                {manualSchwabSplitSells.map((row, i) => (
+                  <div key={i} style={{ display: 'grid', gridTemplateColumns: '1fr 1fr 1fr auto', gap: 6, alignItems: 'end' }}>
+                    <input type="number" value={row.qty} placeholder="Qty" style={inputStyle}
+                      onChange={(e) => setManualSchwabSplitSells((rows) => rows.map((r, j) => j === i ? { ...r, qty: e.target.value } : r))} />
+                    <input type="number" step="0.01" value={row.price} placeholder="Sell price" style={inputStyle}
+                      onChange={(e) => setManualSchwabSplitSells((rows) => rows.map((r, j) => j === i ? { ...r, price: e.target.value } : r))} />
+                    <input type="date" value={row.date} style={inputStyle}
+                      onChange={(e) => setManualSchwabSplitSells((rows) => rows.map((r, j) => j === i ? { ...r, date: e.target.value } : r))} />
+                    <button onClick={() => setManualSchwabSplitSells((rows) => rows.length > 1 ? rows.filter((_, j) => j !== i) : rows)}
+                      title="Remove this sell" style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.dim, cursor: 'pointer', padding: '6px 8px', display: 'flex', alignItems: 'center' }}>
+                      <Trash2 size={12} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+              <button onClick={() => setManualSchwabSplitSells((rows) => [...rows, { qty: '', price: '', date: '' }])}
+                style={{ marginTop: 8, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 6, color: COLORS.text, cursor: 'pointer', padding: '5px 10px', fontSize: 12, fontWeight: 600 }}>
+                + Add another sell
+              </button>
+              <div style={{ fontSize: 11, color: COLORS.dim, marginTop: 6 }}>
+                Any bought quantity left over after these sells is added as a separate open position.
+              </div>
+            </div>
+          )}
+          <button onClick={manualSchwabMode === 'open' ? addManualSchwabOpenPosition : manualSchwabMode === 'split' ? addManualSchwabSplitTrades : addManualSchwabTrade}
             style={{ background: COLORS.text, color: COLORS.bg, border: 'none', borderRadius: 6, padding: '7px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer' }}>
-            {manualSchwabStillOpen ? 'Add position' : 'Add trade'}
+            {manualSchwabMode === 'open' ? 'Add position' : manualSchwabMode === 'split' ? 'Add buy + sells' : 'Add trade'}
           </button>
         </div>
       )}
