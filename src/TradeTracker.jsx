@@ -355,7 +355,7 @@ export default function TradeTracker() {
   const [manualSchwabSymbol, setManualSchwabSymbol] = useState('');
   const [manualSchwabType, setManualSchwabType] = useState('shares');
   const [manualSchwabExpiration, setManualSchwabExpiration] = useState('');
-  const [manualSchwabAccount, setManualSchwabAccount] = useState('Individual');
+  const [manualSchwabAccount, setManualSchwabAccount] = useState('Schwab');
   const [manualSchwabQty, setManualSchwabQty] = useState('');
   const [manualSchwabBuyPrice, setManualSchwabBuyPrice] = useState('');
   const [manualSchwabSellPrice, setManualSchwabSellPrice] = useState('');
@@ -610,7 +610,7 @@ export default function TradeTracker() {
       symbol, tradeType, expiration: manualSchwabExpiration.trim(),
       qty, buyPrice, sellPrice, openDate: manualSchwabOpenDate, closeDate: manualSchwabCloseDate, pnl,
       isOption: tradeType.toLowerCase() !== 'shares',
-      account: manualSchwabAccount.trim() || 'Individual', desc: '',
+      account: manualSchwabAccount.trim() || 'Schwab', desc: '',
     };
     const merged = [...schwabRealized, newTrade].sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1));
     setSchwabRealized(merged);
@@ -639,7 +639,7 @@ export default function TradeTracker() {
     const newPos = {
       symbol, tradeType, expiration: manualSchwabExpiration.trim(),
       qty, buyPrice, openDate: manualSchwabOpenDate,
-      account: manualSchwabAccount.trim() || 'Individual', desc: '',
+      account: manualSchwabAccount.trim() || 'Schwab', desc: '',
     };
     const merged = [...schwabOpen, newPos].sort((a, b) => (a.openDate < b.openDate ? -1 : 1));
     setSchwabOpen(merged);
@@ -683,7 +683,7 @@ export default function TradeTracker() {
     }
     const tradeType = manualSchwabType.trim() || 'shares';
     const expiration = manualSchwabExpiration.trim();
-    const account = manualSchwabAccount.trim() || 'Individual';
+    const account = manualSchwabAccount.trim() || 'Schwab';
     const mult = tradeType.toLowerCase() !== 'shares' ? 100 : 1;
     const newTrades = sellRows.map((r) => {
       const rQty = parseFloat(r.qty), rPrice = parseFloat(r.price);
@@ -1379,7 +1379,7 @@ export default function TradeTracker() {
             </div>
             <div>
               <label style={labelStyle}>Account</label>
-              <input value={manualSchwabAccount} onChange={(e) => setManualSchwabAccount(e.target.value)} placeholder="Individual" style={inputStyle} />
+              <input value={manualSchwabAccount} onChange={(e) => setManualSchwabAccount(e.target.value)} placeholder="Schwab" style={inputStyle} />
             </div>
             <div>
               <label style={labelStyle}>Quantity{manualSchwabMode === 'split' ? ' (bought)' : ''}</label>
