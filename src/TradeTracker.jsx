@@ -934,6 +934,56 @@ export default function TradeTracker() {
     });
   }, []);
 
+  // Sells part (or all) of an open Schwab position — a quick way to trim a
+  // couple shares/contracts at a time without retyping symbol/type/buy price.
+  // Writes a closed round-trip row for the sold qty and shrinks (or removes)
+  // the open position by that amount.
+  const trimSchwabPosition = useCallback((position) => {
+    const unit = isContractTrade(position) ? 'contracts' : 'shares';
+    const qtyStr = window.prompt(`Sell how many of the ${position.qty} ${unit} of ${position.symbol}?`, String(position.qty));
+    if (qtyStr == null) return;
+    const qty = parseFloat(qtyStr);
+    if (!(qty > 0) || qty > position.qty + 1e-9) {
+      window.alert(`Enter a quantity between 0 and ${position.qty}.`);
+      return;
+    }
+    const priceStr = window.prompt('Sell price?');
+    if (priceStr == null) return;
+    const sellPrice = parseFloat(priceStr);
+    if (!(sellPrice > 0)) {
+      window.alert('Enter a positive price.');
+      return;
+    }
+    const dateStr = window.prompt('Close date? (YYYY-MM-DD)', new Date().toISOString().slice(0, 10));
+    if (dateStr == null) return;
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(dateStr)) {
+      window.alert('Enter the date as YYYY-MM-DD.');
+      return;
+    }
+
+    const mult = isContractTrade(position) ? 100 : 1;
+    const newTrade = {
+      symbol: position.symbol, tradeType: position.tradeType, expiration: position.expiration,
+      qty, buyPrice: position.buyPrice, sellPrice, openDate: position.openDate, closeDate: dateStr,
+      pnl: (sellPrice - position.buyPrice) * qty * mult,
+      isOption: isContractTrade(position), account: position.account, desc: '',
+    };
+    const mergedRealized = [...schwabRealized, newTrade].sort((a, b) => (a.closeDate < b.closeDate ? -1 : 1));
+    setSchwabRealized(mergedRealized);
+
+    const remaining = position.qty - qty;
+    const mergedOpen = remaining > 1e-9
+      ? schwabOpen.map((p) => (p === position ? { ...p, qty: remaining } : p))
+      : schwabOpen.filter((p) => p !== position);
+    setSchwabOpen(mergedOpen);
+
+    const d = new Date(dateStr + 'T12:00:00');
+    setYear(d.getFullYear());
+    setMonth(d.getMonth());
+    try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: mergedRealized, open: mergedOpen, notes: schwabNotes, tradeNotes: schwabTradeNotes })); } catch (_) {}
+    setImportNote(remaining > 1e-9 ? `Sold ${qty} ${unit} — ${remaining} left open.` : `Sold all ${qty} ${unit} — position closed.`);
+  }, [schwabRealized, schwabOpen, schwabNotes, schwabTradeNotes]);
+
   const switchAccount = useCallback((acct) => {
     setActiveAccount(acct);
     setSelectedDay(null);
@@ -1766,10 +1816,18 @@ export default function TradeTracker() {
                                     )}
                                     {p.account && <div style={{ fontWeight: 400, color: COLORS.dim, fontSize: 9.5 }}>{p.account}</div>}
                                   </div>
-                                  <button onClick={() => activeAccount === 'robinhood' ? deletePosition(p) : deleteSchwabOpenPosition(p._raw)} title="Delete this position"
-                                    style={{ flexShrink: 0, background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.red, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
-                                    <Trash2 size={11} />
-                                  </button>
+                                  <div style={{ flexShrink: 0, display: 'flex', alignItems: 'center', gap: 5 }}>
+                                    {activeAccount === 'schwab' && (
+                                      <button onClick={() => trimSchwabPosition(p._raw)} title="Sell some or all of this position"
+                                        style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.text, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
+                                        <TrendingDown size={11} />
+                                      </button>
+                                    )}
+                                    <button onClick={() => activeAccount === 'robinhood' ? deletePosition(p) : deleteSchwabOpenPosition(p._raw)} title="Delete this position"
+                                      style={{ background: 'none', border: `1px solid ${COLORS.border}`, borderRadius: 5, color: COLORS.red, cursor: 'pointer', padding: '3px 5px', display: 'flex', alignItems: 'center' }}>
+                                      <Trash2 size={11} />
+                                    </button>
+                                  </div>
                                 </div>
                                 <div style={{ fontFamily: MONO, fontSize: 11, fontWeight: 700, marginTop: 3 }}>
                                   ${costBasis.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}
