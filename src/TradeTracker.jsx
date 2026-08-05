@@ -234,6 +234,26 @@ function isContractTrade(t) {
   return !!parseOptionSymbol(t.symbol);
 }
 
+// The underlying equity ticker for an option position, used to match a
+// short call/put against shares of the same stock (e.g. for covered-call
+// detection). Robinhood encodes it in the OCC symbol; Schwab's symbol is
+// already just the plain ticker (tradeType carries Calls/Puts separately).
+function optionUnderlying(t) {
+  if (t.tradeType) return t.symbol;
+  const opt = parseOptionSymbol(t.symbol);
+  return opt ? opt.root : null;
+}
+
+// 'Call' | 'Put' | null (null for a plain equity position).
+function optionRight(t) {
+  if (t.tradeType) {
+    const tt = t.tradeType.toLowerCase();
+    return tt.includes('put') ? 'Put' : tt.includes('call') ? 'Call' : null;
+  }
+  const opt = parseOptionSymbol(t.symbol);
+  return opt ? opt.right : null;
+}
+
 // Parse tab-separated text pasted from Excel (Schwab trade log format).
 // Expected columns: Trade #, Ticker, (blank), Trade, Expiration, Contracts,
 // Entry Date, Exit Date, Entry Price, Exit Price, % Gain/Loss, Total $ Gain/Loss,
@@ -1060,6 +1080,38 @@ export default function TradeTracker() {
     ? openPositions
     : schwabOpen.map((p) => ({ ...p, avgPrice: p.buyPrice, isShort: false, _raw: p }));
 
+  // Cross-references share and short-call positions on the same underlying
+  // (same account) so the Open Positions modal can show a short call as
+  // "covered" once there's a full 100-share lot backing it, and flag a
+  // share position as having room to sell a covered call against it.
+  const annotatedOpenPositions = useMemo(() => {
+    const byKey = {};
+    for (const p of displayOpenPositions) {
+      const root = optionUnderlying(p);
+      if (!root) continue;
+      const key = `${p.account}|${root}`;
+      if (!byKey[key]) byKey[key] = { shares: 0, shortCallContracts: 0 };
+      if (isContractTrade(p)) {
+        if (p.isShort && optionRight(p) === 'Call') byKey[key].shortCallContracts += p.qty;
+      } else {
+        byKey[key].shares += p.qty;
+      }
+    }
+    return displayOpenPositions.map((p) => {
+      const root = optionUnderlying(p);
+      const agg = root ? byKey[`${p.account}|${root}`] : null;
+      if (!agg) return p;
+      if (isContractTrade(p) && p.isShort && optionRight(p) === 'Call') {
+        return { ...p, isCovered: agg.shares >= p.qty * 100 };
+      }
+      if (!isContractTrade(p) && p.qty >= 100) {
+        const ccPossible = Math.floor((p.qty - agg.shortCallContracts * 100) / 100);
+        if (ccPossible > 0) return { ...p, ccPossible };
+      }
+      return p;
+    });
+  }, [displayOpenPositions]);
+
   // Open (non-short) lots for whatever symbol/account is currently typed into
   // the manual-trade form, so a sell can be pinned to a specific one.
   const manualLotOptions = useMemo(() => {
@@ -1824,14 +1876,14 @@ export default function TradeTracker() {
               <button onClick={() => setShowPositions(false)}
                 style={{ background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', fontSize: 20, lineHeight: 1, padding: 4 }}>×</button>
             </div>
-            {displayOpenPositions.length === 0 ? (
+            {annotatedOpenPositions.length === 0 ? (
               <div style={{ fontSize: 13, color: COLORS.dim }}>No open positions - everything's closed out.</div>
             ) : (
               <div style={{ display: 'flex', flexDirection: 'column', gap: 12 }}>
                 <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: 18 }}>
                   {[
-                    { label: 'Shares', items: displayOpenPositions.filter((p) => !isContractTrade(p)) },
-                    { label: 'Options', items: displayOpenPositions.filter((p) => isContractTrade(p)) },
+                    { label: 'Shares', items: annotatedOpenPositions.filter((p) => !isContractTrade(p)) },
+                    { label: 'Options', items: annotatedOpenPositions.filter((p) => isContractTrade(p)) },
                   ].map(({ label, items }) => (
                     <div key={label}>
                       <div style={{ fontSize: 10, letterSpacing: 0.5, color: COLORS.dim, textTransform: 'uppercase', marginBottom: 8 }}>{label}</div>
@@ -1849,12 +1901,22 @@ export default function TradeTracker() {
                                 <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: 6 }}>
                                   <div style={{ fontSize: 11.5, fontWeight: 600, lineHeight: 1.3 }}>
                                     {posLabel}
-                                    {p.isShort && <span style={{ fontSize: 9.5, fontWeight: 500, color: COLORS.amber, marginLeft: 4 }}>SHORT</span>}
+                                    {p.isShort && (
+                                      <span style={{ fontSize: 9.5, fontWeight: 500, color: p.isCovered ? COLORS.green : COLORS.amber, marginLeft: 4 }}>
+                                        {p.isCovered ? 'COVERED CALL' : optionRight(p) ? `SHORT ${optionRight(p).toUpperCase()}` : 'SHORT'}
+                                      </span>
+                                    )}
                                     {p.isShort && (
                                       <button onClick={() => convertShortToLong(p)} title="Not actually a short — add the missing buy so it FIFO-matches as a normal long"
                                         style={{ marginLeft: 4, background: 'none', border: 'none', color: COLORS.dim, cursor: 'pointer', padding: 0, fontSize: 9.5, textDecoration: 'underline' }}>
                                         fix
                                       </button>
+                                    )}
+                                    {p.ccPossible > 0 && (
+                                      <span title="Uncovered 100-share lots available to sell a call against"
+                                        style={{ fontSize: 9.5, fontWeight: 500, color: COLORS.green, marginLeft: 4 }}>
+                                        CC POSSIBLE{p.ccPossible > 1 ? ` ×${p.ccPossible}` : ''}
+                                      </span>
                                     )}
                                     {p.account && <div style={{ fontWeight: 400, color: COLORS.dim, fontSize: 9.5 }}>{p.account}</div>}
                                   </div>
@@ -1885,7 +1947,7 @@ export default function TradeTracker() {
                 </div>
                 {(() => {
                   const byAcct = {};
-                  for (const p of displayOpenPositions) {
+                  for (const p of annotatedOpenPositions) {
                     const key = p.account || 'Unknown';
                     const mult = isContractTrade(p) ? 100 : 1;
                     byAcct[key] = (byAcct[key] || 0) + p.avgPrice * p.qty * mult;
