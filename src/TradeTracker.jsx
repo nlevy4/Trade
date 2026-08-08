@@ -245,11 +245,12 @@ function toMD(iso) {
   return `${parseInt(mo, 10)}/${parseInt(d, 10)}`;
 }
 
-// Builds one tab-separated row matching the swing-trade Excel log's columns:
-// Ticker, (blank), Trade, Expiration, Contracts, Entry Date, Exit Date,
-// Entry Price, Exit Price, % Gain/Loss, Total $ Gain/Loss, Setup / Thesis,
-// Notes / Emotion — so it can be copied and pasted straight into a sheet.
-function tradeToExcelRow(t, note) {
+// Builds the cell values for one row matching the swing-trade Excel log's
+// columns: Ticker, (blank), Trade, Expiration, Contracts, Entry Date, Exit
+// Date, Entry Price, Exit Price, % Gain/Loss, Total $ Gain/Loss, Setup /
+// Thesis, Notes / Emotion — so it can be copied and pasted straight into a
+// sheet, either as tab-separated plain text or an HTML table row.
+function tradeToExcelCells(t, note) {
   const opt = t.tradeType ? null : parseOptionSymbol(t.symbol);
   const isOpt = t.tradeType ? t.tradeType.toLowerCase() !== 'shares' : !!opt;
   const ticker = opt ? opt.root : t.symbol;
@@ -264,7 +265,11 @@ function tradeToExcelRow(t, note) {
     ticker, '', tradeType, expiration, t.qty, toMD(t.openDate), toMD(t.closeDate),
     entryPrice.toFixed(2), exitPrice.toFixed(2), `${pct.toFixed(2)}%`, t.pnl.toFixed(2),
     '', note || '',
-  ].join('\t');
+  ];
+}
+
+function escapeHtml(s) {
+  return String(s).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
 }
 
 function csvValue(v) {
@@ -1366,13 +1371,27 @@ export default function TradeTracker() {
 
   // Copies one trade as a tab-separated row matching the swing-trade Excel
   // log's columns, so it can be pasted straight in as a new row — doesn't
-  // touch any file, just the clipboard.
+  // touch any file, just the clipboard. Also writes an HTML table alongside
+  // the plain text so a Roth IRA trade pastes into Excel pre-highlighted
+  // yellow (Excel reads the richer text/html clipboard format on a normal
+  // paste; plain text stays the fallback for anywhere that doesn't).
   const copyTradeRow = useCallback(async (t) => {
     const note = activeTradeNotes[noteKey(t)];
-    const row = tradeToExcelRow(t, note);
+    const cells = tradeToExcelCells(t, note);
+    const plain = cells.join('\t');
+    const isRoth = /roth/i.test(t.account || '');
+    const cellStyle = isRoth ? ' style="background-color:#FFFF00"' : '';
+    const html = `<table><tr>${cells.map((c) => `<td${cellStyle}>${escapeHtml(c)}</td>`).join('')}</tr></table>`;
     try {
-      await navigator.clipboard.writeText(row);
-      setImportNote('Row copied — paste into your Excel sheet.');
+      if (navigator.clipboard.write && window.ClipboardItem) {
+        await navigator.clipboard.write([new ClipboardItem({
+          'text/plain': new Blob([plain], { type: 'text/plain' }),
+          'text/html': new Blob([html], { type: 'text/html' }),
+        })]);
+      } else {
+        await navigator.clipboard.writeText(plain);
+      }
+      setImportNote(isRoth ? 'Row copied (highlighted yellow for Roth) — paste into your Excel sheet.' : 'Row copied — paste into your Excel sheet.');
     } catch (_) {
       setError('Could not copy automatically — select and copy manually.');
     }
