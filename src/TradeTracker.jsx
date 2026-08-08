@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from "react";
-import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2, SquarePen, Download } from "lucide-react";
+import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2, SquarePen, Download, Copy } from "lucide-react";
 import { AreaChart, Area, ComposedChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { APP_VERSION } from "./version";
 
@@ -236,6 +236,35 @@ function simpleTradeLegs(t) {
   const [a, b] = t.legs;
   if (a.idx === b.idx || a.qty !== t.qty || b.qty !== t.qty) return null;
   return t.isShort ? { buyIdx: a.idx, sellIdx: b.idx } : { buyIdx: b.idx, sellIdx: a.idx };
+}
+
+// "2026-07-30" -> "7/30", matching the un-padded M/D style used in the
+// user's Excel swing-trade log (and what parseSchwabTSV's parseMD reads back).
+function toMD(iso) {
+  const [, mo, d] = iso.split('-');
+  return `${parseInt(mo, 10)}/${parseInt(d, 10)}`;
+}
+
+// Builds one tab-separated row matching the swing-trade Excel log's columns:
+// Ticker, (blank), Trade, Expiration, Contracts, Entry Date, Exit Date,
+// Entry Price, Exit Price, % Gain/Loss, Total $ Gain/Loss, Setup / Thesis,
+// Notes / Emotion — so it can be copied and pasted straight into a sheet.
+function tradeToExcelRow(t, note) {
+  const opt = t.tradeType ? null : parseOptionSymbol(t.symbol);
+  const isOpt = t.tradeType ? t.tradeType.toLowerCase() !== 'shares' : !!opt;
+  const ticker = opt ? opt.root : t.symbol;
+  const tradeType = t.tradeType || (opt ? (opt.right === 'Call' ? 'Calls' : 'Puts') : 'shares');
+  const expiration = t.expiration || (opt ? opt.dateLabel : '');
+  const mult = isOpt ? 100 : 1;
+  const entryPrice = t.isShort ? t.sellPrice : t.buyPrice;
+  const exitPrice = t.isShort ? t.buyPrice : t.sellPrice;
+  const notional = entryPrice * t.qty * mult;
+  const pct = notional ? (t.pnl / notional) * 100 : 0;
+  return [
+    ticker, '', tradeType, expiration, t.qty, toMD(t.openDate), toMD(t.closeDate),
+    entryPrice.toFixed(2), exitPrice.toFixed(2), `${pct.toFixed(2)}%`, t.pnl.toFixed(2),
+    '', note || '',
+  ].join('\t');
 }
 
 function csvValue(v) {
@@ -1335,6 +1364,20 @@ export default function TradeTracker() {
     }
   };
 
+  // Copies one trade as a tab-separated row matching the swing-trade Excel
+  // log's columns, so it can be pasted straight in as a new row — doesn't
+  // touch any file, just the clipboard.
+  const copyTradeRow = useCallback(async (t) => {
+    const note = activeTradeNotes[noteKey(t)];
+    const row = tradeToExcelRow(t, note);
+    try {
+      await navigator.clipboard.writeText(row);
+      setImportNote('Row copied — paste into your Excel sheet.');
+    } catch (_) {
+      setError('Could not copy automatically — select and copy manually.');
+    }
+  }, [activeTradeNotes]);
+
   const firstDow = new Date(year, month, 1).getDay();
   const daysInMonth = new Date(year, month + 1, 0).getDate();
   const maxAbs = Math.max(1, ...Object.values(dayPnl).map((d) => Math.abs(d.pnl)));
@@ -1923,6 +1966,12 @@ export default function TradeTracker() {
                             </div>
                           </div>
                           <div style={{ display: 'flex', alignItems: 'center', gap: 8 }}>
+                            {t.openDate !== t.closeDate && (
+                              <button onClick={() => copyTradeRow(t)} title="Copy as a row for your swing-trade Excel sheet"
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: COLORS.dim, display: 'flex', alignItems: 'center' }}>
+                                <Copy size={12} />
+                              </button>
+                            )}
                             <button onClick={() => setEditingNoteKey(isEditing ? null : nk)}
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, position: 'relative', color: hasNote ? COLORS.amber : COLORS.dim, display: 'flex', alignItems: 'center' }}>
                               <Pencil size={12} />
