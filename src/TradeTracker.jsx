@@ -43,7 +43,32 @@ function parseOptionSymbol(raw) {
   const strikeLabel = strike % 1 === 0 ? strike.toFixed(0) : strike.toFixed(2);
   const rightLabel = right === 'C' ? 'Call' : 'Put';
   const dateLabel = `${mm}/${dd}/${yy}`;
-  return { root, right: rightLabel, strike, dateLabel, label: `${root} $${strikeLabel} ${rightLabel} · ${dateLabel}` };
+  const expirationISO = `20${yy}-${String(mm).padStart(2, '0')}-${String(dd).padStart(2, '0')}`;
+  return { root, right: rightLabel, strike, dateLabel, expirationISO, label: `${root} $${strikeLabel} ${rightLabel} · ${dateLabel}` };
+}
+
+// The expiration date (ISO) for an option position, whichever account it
+// came from — Robinhood encodes it in the OCC symbol, Schwab carries it as
+// a separate `expiration` field (already M/D or M/D/YY from the sheet).
+function optionExpirationISO(t) {
+  if (t.tradeType) {
+    if (!t.expiration) return null;
+    const parts = t.expiration.trim().split('/').map((n) => parseInt(n, 10));
+    if (parts.length === 2) {
+      const [mo, d] = parts;
+      if (!mo || !d) return null;
+      return `${new Date().getFullYear()}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+    if (parts.length === 3) {
+      let [mo, d, y] = parts;
+      if (!mo || !d || !y) return null;
+      if (y < 100) y += 2000;
+      return `${y}-${String(mo).padStart(2, '0')}-${String(d).padStart(2, '0')}`;
+    }
+    return null;
+  }
+  const opt = parseOptionSymbol(t.symbol);
+  return opt ? opt.expirationISO : null;
 }
 
 // Builds a realized-trade row for one matched (lot, closing-transaction) pair.
@@ -525,6 +550,24 @@ export default function TradeTracker() {
     setLastSynced(now);
     try { localStorage.setItem('trades-data', JSON.stringify({ trades: merged, lastSynced: now, notes, tradeNotes })); } catch (_) {}
     setImportNote('Position reclassified as a long.');
+  }, [trades, notes, tradeNotes]);
+
+  // Closes a still-open short option at $0 — i.e. it expired worthless, so
+  // the full premium collected when it was sold gets realized as profit.
+  const expireShortPosition = useCallback((position) => {
+    const expirationISO = optionExpirationISO(position);
+    const closeDate = expirationISO || new Date().toISOString().slice(0, 10);
+    if (!window.confirm(`Close ${position.qty} ${position.symbol} for $0 (expired worthless) on ${closeDate}? You'll keep the full premium.`)) return;
+    const newTrade = {
+      date: closeDate, symbol: position.symbol, desc: '', side: 'buy',
+      qty: position.qty, price: 0, account: position.account,
+    };
+    const merged = [...trades, newTrade].sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
+    setTrades(merged);
+    const now = new Date().toISOString();
+    setLastSynced(now);
+    try { localStorage.setItem('trades-data', JSON.stringify({ trades: merged, lastSynced: now, notes, tradeNotes })); } catch (_) {}
+    setImportNote('Closed at $0 — full premium realized.');
   }, [trades, notes, tradeNotes]);
 
   // Adds a single hand-entered trade. A sell can pin itself to a specific
@@ -1098,16 +1141,23 @@ export default function TradeTracker() {
         byKey[key].shares += p.qty;
       }
     }
+    const todayISO = new Date().toISOString().slice(0, 10);
     return displayOpenPositions.map((p) => {
-      const root = optionUnderlying(p);
-      const agg = root ? byKey[`${p.account}|${root}`] : null;
-      if (!agg) return p;
-      if (isContractTrade(p) && p.isShort && optionRight(p) === 'Call') {
-        return { ...p, isCovered: agg.shares >= p.qty * 100 };
+      if (p.isShort && isContractTrade(p)) {
+        const expISO = optionExpirationISO(p);
+        const isExpired = !!expISO && expISO < todayISO;
+        const root = optionUnderlying(p);
+        const agg = root ? byKey[`${p.account}|${root}`] : null;
+        const isCovered = optionRight(p) === 'Call' && !!agg && agg.shares >= p.qty * 100;
+        return { ...p, isExpired, isCovered };
       }
       if (!isContractTrade(p) && p.qty >= 100) {
-        const ccPossible = Math.floor((p.qty - agg.shortCallContracts * 100) / 100);
-        if (ccPossible > 0) return { ...p, ccPossible };
+        const root = optionUnderlying(p);
+        const agg = root ? byKey[`${p.account}|${root}`] : null;
+        if (agg) {
+          const ccPossible = Math.floor((p.qty - agg.shortCallContracts * 100) / 100);
+          if (ccPossible > 0) return { ...p, ccPossible };
+        }
       }
       return p;
     });
@@ -1660,7 +1710,9 @@ export default function TradeTracker() {
             <StatCard label="Win Rate" value={`${stats.winRate}%`} color={COLORS.text} square />
             <StatCard label="Best Day" value={stats.best ? fmt(stats.best.pnl) : '—'} sub={stats.best?.date} color={COLORS.green} />
             <StatCard label="Worst Day" value={stats.worst ? fmt(stats.worst.pnl) : '—'} sub={stats.worst?.date} color={COLORS.red} />
-            <StatCard label="Open Positions" value={activeAccount === 'robinhood' ? openPositions.length : schwabOpen.length} color={COLORS.amber} onClick={() => setShowPositions(true)} />
+            <StatCard label="Open Positions" value={activeAccount === 'robinhood' ? openPositions.length : schwabOpen.length}
+              sub={annotatedOpenPositions.some((p) => p.isExpired) ? 'expired position' : null}
+              color={annotatedOpenPositions.some((p) => p.isExpired) ? COLORS.red : COLORS.amber} onClick={() => setShowPositions(true)} />
             <StatCard
               label="Avg Win"
               value={avgStats.shWin != null ? fmt(avgStats.shWin) : avgStats.optWin != null ? fmt(avgStats.optWin) : '—'}
@@ -1961,6 +2013,15 @@ export default function TradeTracker() {
                                       <span style={{ fontSize: 9.5, fontWeight: 500, color: p.isCovered ? COLORS.green : COLORS.amber, marginLeft: 4 }}>
                                         {p.isCovered ? 'COVERED CALL' : optionRight(p) ? `SHORT ${optionRight(p).toUpperCase()}` : 'SHORT'}
                                       </span>
+                                    )}
+                                    {p.isExpired && (
+                                      <span style={{ fontSize: 9.5, fontWeight: 700, color: COLORS.red, marginLeft: 4 }}>EXPIRED</span>
+                                    )}
+                                    {p.isExpired && (
+                                      <button onClick={() => expireShortPosition(p)} title="Close at $0 — expired worthless, keeps the full premium as profit"
+                                        style={{ marginLeft: 4, background: 'none', border: 'none', color: COLORS.red, cursor: 'pointer', padding: 0, fontSize: 9.5, fontWeight: 700, textDecoration: 'underline' }}>
+                                        close @ $0
+                                      </button>
                                     )}
                                     {p.isShort && (
                                       <button onClick={() => convertShortToLong(p)} title="Not actually a short — add the missing buy so it FIFO-matches as a normal long"
