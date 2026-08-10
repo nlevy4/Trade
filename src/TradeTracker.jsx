@@ -719,12 +719,12 @@ export default function TradeTracker() {
     const d = new Date(newTrade.closeDate + 'T12:00:00');
     setYear(d.getFullYear());
     setMonth(d.getMonth());
-    try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: merged, notes: schwabNotes, tradeNotes: schwabTradeNotes })); } catch (_) {}
+    try { localStorage.setItem('trades-data-schwab', JSON.stringify({ realized: merged, open: schwabOpen, notes: schwabNotes, tradeNotes: schwabTradeNotes })); } catch (_) {}
     setShowManualTrade(false);
     setManualSchwabSymbol(''); setManualSchwabExpiration(''); setManualSchwabQty('');
     setManualSchwabBuyPrice(''); setManualSchwabSellPrice(''); setManualSchwabPnl('');
     setImportNote('Trade added.');
-  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabOpenDate, manualSchwabCloseDate, manualSchwabPnl, manualSchwabAutoPnl, schwabRealized, schwabNotes, schwabTradeNotes]);
+  }, [manualSchwabSymbol, manualSchwabType, manualSchwabExpiration, manualSchwabQty, manualSchwabBuyPrice, manualSchwabSellPrice, manualSchwabOpenDate, manualSchwabCloseDate, manualSchwabPnl, manualSchwabAutoPnl, schwabRealized, schwabOpen, schwabNotes, schwabTradeNotes]);
 
   // Adds a hand-entered Schwab position that hasn't been closed yet — no
   // sell price/close date/P&L, since none of that exists until it's exited.
