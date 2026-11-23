@@ -466,7 +466,7 @@ export default function TradeTracker() {
   const [compactCalendar, setCompactCalendar] = useState(false);
   const [editingNoteKey, setEditingNoteKey] = useState(null);
   const [editingTrade, setEditingTrade] = useState(null);
-  const [chartAccount, setChartAccount] = useState('all');
+  const [subAccount, setSubAccount] = useState('all');
   const [chartView, setChartView] = useState('line'); // 'line' | 'candles'
   const [selectedDay, setSelectedDay] = useState(null);
   const [loaded, setLoaded] = useState(false);
@@ -1154,8 +1154,10 @@ export default function TradeTracker() {
   // rows already have this shape; Schwab's open rows carry buyPrice instead
   // of avgPrice and have no long/short concept, so map them onto the same
   // fields (keeping a back-reference for delete).
+  // On Robinhood, the page-wide sub-account filter (Individual / Roth IRA)
+  // narrows this list too.
   const displayOpenPositions = activeAccount === 'robinhood'
-    ? openPositions
+    ? (subAccount === 'all' ? openPositions : openPositions.filter((p) => p.account === subAccount))
     : schwabOpen.map((p) => ({ ...p, avgPrice: p.buyPrice, isShort: false, _raw: p }));
 
   // Cross-references share and short-call positions on the same underlying
@@ -1207,24 +1209,30 @@ export default function TradeTracker() {
     return pos ? pos.lots.slice().sort((a, b) => (a.date < b.date ? -1 : 1)) : [];
   }, [manualSide, manualSymbol, manualAccount, openPositions]);
 
-  const realized = useMemo(() =>
-    activeAccount === 'robinhood' ? rhRealized : schwabRealized,
-    [activeAccount, rhRealized, schwabRealized]
-  );
+  // Distinct Robinhood sub-accounts (e.g. "Individual", "Roth IRA") found in
+  // the trades and open positions, for the page-wide account filter. Schwab
+  // is a single account, so it never gets one.
+  const subAccounts = useMemo(() => {
+    if (activeAccount !== 'robinhood') return [];
+    const set = new Set();
+    for (const r of rhRealized) if (r.account) set.add(r.account);
+    for (const p of openPositions) if (p.account) set.add(p.account);
+    return [...set].sort();
+  }, [activeAccount, rhRealized, openPositions]);
+
+  // Everything downstream (calendar, stats, chart, monthly breakdown, trade
+  // history, CSV export, P&L by ticker) reads this, so filtering here
+  // scopes the whole page to the selected sub-account.
+  const realized = useMemo(() => {
+    if (activeAccount !== 'robinhood') return schwabRealized;
+    return subAccount === 'all' ? rhRealized : rhRealized.filter((r) => r.account === subAccount);
+  }, [activeAccount, rhRealized, schwabRealized, subAccount]);
 
   const activeTradeNotes = activeAccount === 'robinhood' ? tradeNotes : schwabTradeNotes;
 
-  // Distinct sub-accounts (e.g. "Individual", "Roth IRA") present in the
-  // current account's trades, for the Cumulative P&L chart's account toggle.
-  const subAccounts = useMemo(() => {
-    const set = new Set();
-    for (const r of realized) if (r.account) set.add(r.account);
-    return [...set].sort();
-  }, [realized]);
-
   useEffect(() => {
-    if (chartAccount !== 'all' && !subAccounts.includes(chartAccount)) setChartAccount('all');
-  }, [subAccounts, chartAccount]);
+    if (subAccount !== 'all' && !subAccounts.includes(subAccount)) setSubAccount('all');
+  }, [subAccounts, subAccount]);
 
   const dayPnl = useMemo(() => {
     const map = {};
@@ -1262,13 +1270,12 @@ export default function TradeTracker() {
   }, [realized]);
 
   const equityCurve = useMemo(() => {
-    const filtered = chartAccount === 'all' ? realized : realized.filter((r) => r.account === chartAccount);
     const map = {};
-    for (const r of filtered) map[r.closeDate] = (map[r.closeDate] || 0) + r.pnl;
+    for (const r of realized) map[r.closeDate] = (map[r.closeDate] || 0) + r.pnl;
     const days = Object.entries(map).sort((a, b) => (a[0] < b[0] ? -1 : 1));
     let cum = 0;
     return days.map(([date, pnl]) => { cum += pnl; return { date: date.slice(5), value: Math.round(cum * 100) / 100 }; });
-  }, [realized, chartAccount]);
+  }, [realized]);
 
   const { yMin, yMax, zeroOffset } = useMemo(() => {
     const values = equityCurve.map((d) => d.value);
@@ -1287,9 +1294,8 @@ export default function TradeTracker() {
   // open, same shape as a bullish hammer, but plotted against the whole
   // account history instead of resetting to zero each day.
   const candleEquity = useMemo(() => {
-    const filtered = chartAccount === 'all' ? realized : realized.filter((r) => r.account === chartAccount);
     const byDay = {};
-    for (const r of filtered) (byDay[r.closeDate] || (byDay[r.closeDate] = [])).push(r.pnl);
+    for (const r of realized) (byDay[r.closeDate] || (byDay[r.closeDate] = [])).push(r.pnl);
     const days = Object.keys(byDay).sort();
     const round = (n) => Math.round(n * 100) / 100;
     let running = 0;
@@ -1304,7 +1310,7 @@ export default function TradeTracker() {
       running = cum;
       return { date: date.slice(5), open: round(open), close: round(cum), high: round(high), low: round(low), range: [round(low), round(high)] };
     });
-  }, [realized, chartAccount]);
+  }, [realized]);
 
   const { candleYMin, candleYMax } = useMemo(() => {
     const highs = candleEquity.map((d) => d.high);
@@ -1403,7 +1409,11 @@ export default function TradeTracker() {
   const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
   const monthEntry = monthlyBreakdown.find(([key]) => key === monthKey);
   const monthPnl = monthEntry ? monthEntry[1].day + monthEntry[1].swing : null;
-  const selectedTrades = selectedDay ? (dayPnl[selectedDay]?.trades || []) : realized.slice().reverse().slice(0, 20);
+  // With no day picked, the side panel is the full trade history for the
+  // current account filter, newest close first.
+  const selectedTrades = selectedDay
+    ? (dayPnl[selectedDay]?.trades || [])
+    : realized.slice().sort((a, b) => (a.closeDate < b.closeDate ? 1 : a.closeDate > b.closeDate ? -1 : 0));
   const hasData = activeAccount === 'robinhood' ? trades.length > 0 : (schwabRealized.length > 0 || schwabOpen.length > 0);
 
   const exportCsv = useCallback(() => {
@@ -1417,12 +1427,12 @@ export default function TradeTracker() {
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');
     a.href = url;
-    a.download = `trades-${activeAccount}-${new Date().toISOString().slice(0, 10)}.csv`;
+    a.download = `trades-${activeAccount}${activeAccount === 'robinhood' && subAccount !== 'all' ? '-' + subAccount.replace(/\s+/g, '-').toLowerCase() : ''}-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(a);
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [realized, activeAccount]);
+  }, [realized, activeAccount, subAccount]);
 
   useLayoutEffect(() => {
     const el = calendarRef.current;
@@ -1457,6 +1467,18 @@ export default function TradeTracker() {
               </button>
             ))}
           </div>
+
+          {/* Sub-account filter (Robinhood only) — scopes the whole page */}
+          {activeAccount === 'robinhood' && subAccounts.length > 1 && (
+            <div style={{ display: 'flex', background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 8, padding: 3, gap: 2, flexWrap: 'wrap' }}>
+              {['all', ...subAccounts].map((acct) => (
+                <button key={acct} onClick={() => { setSubAccount(acct); setSelectedDay(null); }}
+                  style={{ background: subAccount === acct ? COLORS.text : 'none', color: subAccount === acct ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 6, padding: '5px 14px', fontSize: 12.5, fontWeight: 600, cursor: 'pointer', transition: 'all .15s' }}>
+                  {acct === 'all' ? 'All accounts' : acct}
+                </button>
+              ))}
+            </div>
+          )}
 
           <button onClick={() => setShowBackup(true)}
             style={{ background: 'none', color: COLORS.muted, border: `1px solid ${COLORS.border}`, borderRadius: 6, padding: '8px 16px', fontSize: 13, fontWeight: 600, cursor: 'pointer' }}>
@@ -1772,7 +1794,7 @@ export default function TradeTracker() {
             <StatCard label="Win Rate" value={`${stats.winRate}%`} color={COLORS.text} square />
             <StatCard label="Best Day" value={stats.best ? fmt(stats.best.pnl) : '—'} sub={stats.best?.date} color={COLORS.green} />
             <StatCard label="Worst Day" value={stats.worst ? fmt(stats.worst.pnl) : '—'} sub={stats.worst?.date} color={COLORS.red} />
-            <StatCard label="Open Positions" value={activeAccount === 'robinhood' ? openPositions.length : schwabOpen.length}
+            <StatCard label="Open Positions" value={displayOpenPositions.length}
               sub={annotatedOpenPositions.some((p) => p.isExpired) ? 'expired position' : null}
               color={annotatedOpenPositions.some((p) => p.isExpired) ? COLORS.red : COLORS.amber} onClick={() => setShowPositions(true)} />
             <StatCard
@@ -1801,20 +1823,6 @@ export default function TradeTracker() {
                     </button>
                   ))}
                 </div>
-                {activeAccount === 'robinhood' && subAccounts.length > 1 && (
-                  <div style={{ display: 'flex', background: COLORS.panel2, border: `1px solid ${COLORS.border}`, borderRadius: 7, padding: 2, gap: 2, flexWrap: 'wrap' }}>
-                    <button onClick={() => setChartAccount('all')}
-                      style={{ background: chartAccount === 'all' ? COLORS.text : 'none', color: chartAccount === 'all' ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                      Combined
-                    </button>
-                    {subAccounts.map((acct) => (
-                      <button key={acct} onClick={() => setChartAccount(acct)}
-                        style={{ background: chartAccount === acct ? COLORS.text : 'none', color: chartAccount === acct ? COLORS.bg : COLORS.muted, border: 'none', borderRadius: 5, padding: '3px 10px', fontSize: 11, fontWeight: 600, cursor: 'pointer' }}>
-                        {acct}
-                      </button>
-                    ))}
-                  </div>
-                )}
               </div>
             </div>
             <ResponsiveContainer width="100%" height={160}>
@@ -1952,7 +1960,9 @@ export default function TradeTracker() {
             <div style={{ background: COLORS.panel, border: `1px solid ${COLORS.border}`, borderRadius: 10, padding: 18, boxSizing: 'border-box', alignSelf: 'start', height: calHeight ?? undefined, maxHeight: calHeight ?? 360, overflowY: 'auto' }}>
               <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 12 }}>
                 <div style={{ fontSize: 11, letterSpacing: 1, color: COLORS.dim, textTransform: 'uppercase' }}>
-                  {selectedDay ? `Trades · ${selectedDay}` : 'Recent realized trades'}
+                  {selectedDay
+                    ? `Trades · ${selectedDay}`
+                    : `Trade history${subAccount !== 'all' && activeAccount === 'robinhood' ? ` · ${subAccount}` : ''} (${selectedTrades.length})`}
                 </div>
                 {selectedDay && selectedTrades.length > 0 && (
                   <button onClick={() => deleteDay(selectedDay, selectedTrades)} title="Delete all trades for this day"
@@ -1962,7 +1972,7 @@ export default function TradeTracker() {
                 )}
               </div>
               {selectedTrades.length === 0 ? (
-                <div style={{ fontSize: 12, color: COLORS.dim }}>No closed trades on this day.</div>
+                <div style={{ fontSize: 12, color: COLORS.dim }}>{selectedDay ? 'No closed trades on this day.' : 'No closed trades yet.'}</div>
               ) : (
                 <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                   {selectedTrades.map((t, i) => {
