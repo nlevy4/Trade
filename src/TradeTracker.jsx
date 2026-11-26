@@ -1249,6 +1249,19 @@ export default function TradeTracker() {
     return { total, winRate, best, worst, tradingDays: days.length };
   }, [dayPnl]);
 
+  // Profit factor = gross profit ÷ gross loss, per closed trade (breakeven
+  // trades count toward neither side). null when there are no trades; Infinity
+  // when there are wins but no losses yet.
+  const profitFactor = useMemo(() => {
+    let grossProfit = 0, grossLoss = 0;
+    for (const r of realized) {
+      if (r.pnl > 0) grossProfit += r.pnl;
+      else if (r.pnl < 0) grossLoss -= r.pnl;
+    }
+    const value = grossLoss > 0 ? grossProfit / grossLoss : grossProfit > 0 ? Infinity : null;
+    return { value, grossProfit, grossLoss };
+  }, [realized]);
+
   const avgStats = useMemo(() => {
     const avg = (arr) => arr.length ? arr.reduce((s, r) => s + r.pnl, 0) / arr.length : null;
     const winners = realized.filter((r) => r.pnl > 0);
@@ -1770,6 +1783,11 @@ export default function TradeTracker() {
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: 8, marginBottom: 20 }}>
             <StatCard label="Realized P&L" value={fmt(stats.total)} color={stats.total >= 0 ? COLORS.green : COLORS.red} />
             <StatCard label="Win Rate" value={`${stats.winRate}%`} color={COLORS.text} square />
+            <StatCard
+              label="Profit Factor"
+              value={profitFactor.value == null ? '—' : profitFactor.value === Infinity ? '∞' : profitFactor.value.toFixed(2)}
+              sub={profitFactor.value == null ? null : `${fmt(profitFactor.grossProfit)} / ${fmt(-profitFactor.grossLoss)}`}
+              color={profitFactor.value == null ? COLORS.text : profitFactor.value >= 1 ? COLORS.green : COLORS.red} />
             <StatCard label="Best Day" value={stats.best ? fmt(stats.best.pnl) : '—'} sub={stats.best?.date} color={COLORS.green} />
             <StatCard label="Worst Day" value={stats.worst ? fmt(stats.worst.pnl) : '—'} sub={stats.worst?.date} color={COLORS.red} />
             <StatCard label="Open Positions" value={activeAccount === 'robinhood' ? openPositions.length : schwabOpen.length}
