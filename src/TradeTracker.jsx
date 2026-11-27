@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo, useCallback, useRef, useLayoutEffect } from "react";
-import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2, SquarePen, Download, Copy } from "lucide-react";
+import { TrendingUp, TrendingDown, ChevronLeft, ChevronRight, AlertCircle, Activity, Pencil, Trash2, SquarePen, Download, Copy, ListX } from "lucide-react";
 import { AreaChart, Area, ComposedChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer, CartesianGrid, ReferenceLine } from "recharts";
 import { APP_VERSION } from "./version";
 
@@ -82,8 +82,27 @@ function closeLot(lot, txn, matched, mult, isShort) {
     pnl: (isShort ? lot.price - txn.price : txn.price - lot.price) * matched * mult,
     isOption: mult === 100, isShort,
     account: lot.account || txn.account,
-    legs: [{ idx: txn._idx, qty: matched }, { idx: lot.idx, qty: matched }],
+    // role 'close' = the closing transaction (the sell for a long, the
+    // buy-to-close for a short); role 'open' = the opening lot it matched.
+    // Merged rows (see the grouping in computeRealized) concatenate these,
+    // so always filter by role rather than by position in the array.
+    legs: [{ idx: txn._idx, qty: matched, role: 'close' }, { idx: lot.idx, qty: matched, role: 'open' }],
   };
+}
+
+// Sums, per raw trades-array index, how much quantity to trim when deleting
+// the given realized rows. By default only the closing legs are counted, so
+// the opening lots they matched go back to being open positions; pass
+// withOpening to also remove those opening lots.
+function legRemovals(rows, withOpening = false) {
+  const removeQty = {};
+  for (const r of rows) {
+    for (const leg of r.legs || []) {
+      if (leg.role !== 'close' && !withOpening) continue;
+      removeQty[leg.idx] = (removeQty[leg.idx] || 0) + leg.qty;
+    }
+  }
+  return removeQty;
 }
 
 // Removes and returns the queue entry matching a manually-picked lot
@@ -889,18 +908,17 @@ export default function TradeTracker() {
   }, [trades, notes, tradeNotes]);
 
   // Deletes every realized trade that closed on a given day. For Robinhood this
-  // walks each trade's contributing legs and trims/removes the underlying buy
-  // and sell rows; for Schwab it just drops the matching imported rows.
+  // trims/removes only each trade's closing transactions (the sells, or the
+  // buy-to-close for shorts), so the lots they closed go back to open
+  // positions; for Schwab it just drops the matching imported rows.
   const deleteDay = useCallback((dateStr, dayTrades) => {
     if (!dayTrades || !dayTrades.length) return;
-    if (!window.confirm(`Delete all trades closed on ${dateStr}? This cannot be undone.`)) return;
+    const msg = activeAccount === 'robinhood'
+      ? `Delete all trades closed on ${dateStr}? This removes the sells, and the shares they closed go back to open positions.`
+      : `Delete all trades closed on ${dateStr}? This cannot be undone.`;
+    if (!window.confirm(msg)) return;
     if (activeAccount === 'robinhood') {
-      const removeQty = {};
-      for (const r of dayTrades) {
-        for (const leg of r.legs || []) {
-          removeQty[leg.idx] = (removeQty[leg.idx] || 0) + leg.qty;
-        }
-      }
+      const removeQty = legRemovals(dayTrades);
       setTrades((prev) => {
         const updated = prev
           .map((t, i) => {
@@ -931,15 +949,22 @@ export default function TradeTracker() {
     setSelectedDay((sd) => (sd === dateStr ? null : sd));
   }, [activeAccount]);
 
-  // Deletes a single realized trade row. For Robinhood this trims/removes just
-  // that trade's contributing buy/sell legs; for Schwab it drops that one row.
-  const deleteTrade = useCallback((t) => {
-    if (!window.confirm('Delete this trade? This cannot be undone.')) return;
+  // Deletes a single realized trade row. For Robinhood this trims/removes only
+  // the row's closing transaction(s) by default, so the lots it closed go back
+  // to open positions; with withOpening it also trims the opening lots (the
+  // buys, or the sell-to-open for shorts). For Schwab it drops that one row.
+  const deleteTrade = useCallback((t, withOpening = false) => {
+    let msg;
+    if (activeAccount !== 'robinhood') msg = 'Delete this trade? This cannot be undone.';
+    else if (withOpening) msg = t.isShort
+      ? 'Delete this trade and its opening sell? This removes both the buy-to-close and the sell-to-open it closed, so nothing goes back to open positions.'
+      : 'Delete this trade and its buys? This removes the sell and also the buy shares it closed, so nothing goes back to open positions.';
+    else msg = t.isShort
+      ? 'Delete this trade? This removes the buy-to-close, and the short it closed goes back to open positions.'
+      : 'Delete this trade? This removes the sell, and the shares it closed go back to open positions.';
+    if (!window.confirm(msg)) return;
     if (activeAccount === 'robinhood') {
-      const removeQty = {};
-      for (const leg of t.legs || []) {
-        removeQty[leg.idx] = (removeQty[leg.idx] || 0) + leg.qty;
-      }
+      const removeQty = legRemovals([t], withOpening);
       setTrades((prev) => {
         const updated = prev
           .map((tr, i) => {
@@ -2020,10 +2045,18 @@ export default function TradeTracker() {
                                 <SquarePen size={12} />
                               </button>
                             )}
-                            <button onClick={() => deleteTrade(t)} title="Delete this trade"
+                            <button onClick={() => deleteTrade(t)}
+                              title={activeAccount === 'robinhood' ? (t.isShort ? 'Delete this trade (the short goes back to open)' : 'Delete this trade (the shares go back to open)') : 'Delete this trade'}
                               style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: COLORS.dim, display: 'flex', alignItems: 'center' }}>
                               <Trash2 size={12} />
                             </button>
+                            {activeAccount === 'robinhood' && (
+                              <button onClick={() => deleteTrade(t, true)}
+                                title={t.isShort ? 'Delete trade and its opening sell' : 'Delete trade and its buys'}
+                                style={{ background: 'none', border: 'none', cursor: 'pointer', padding: 4, color: COLORS.dim, display: 'flex', alignItems: 'center' }}>
+                                <ListX size={12} />
+                              </button>
+                            )}
                             <div style={{ fontFamily: MONO, fontWeight: 700, fontSize: 13, color: t.pnl >= 0 ? COLORS.green : COLORS.red, display: 'flex', alignItems: 'center', gap: 4 }}>
                               {t.pnl >= 0 ? <TrendingUp size={12} /> : <TrendingDown size={12} />}
                               {fmt(t.pnl)}
